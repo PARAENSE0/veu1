@@ -1,0 +1,33 @@
+{
+  "name": "veu-ecos-da-ruptura",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VÉU: Ecos da Ruptura — terror multiplayer assimétrico (1 entidade vs até 8 sobreviventes) para navegador.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch & node --watch dist/server.mjs",
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/build.mjs && node dist/tests/unit.mjs && node dist/tests/e2e-weapons.mjs && node dist/tests/e2e-match.mjs",
+    "test:browser": "node scripts/build.mjs && node tests/browser-smoke.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.25.0",
+    "playwright": "^1.50.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}

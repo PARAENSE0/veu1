@@ -1,0 +1,18 @@
+# Blueprint do Render (https://render.com) — hospedagem do servidor do VÉU.
+# No painel do Render: New > Blueprint > escolha o repositório do GitHub com este projeto.
+services:
+  - type: web
+    name: veu-ecos-da-ruptura
+    runtime: node
+    plan: free # no plano gratuito os dados (contas/progresso) se perdem quando o servidor reinicia
+    buildCommand: npm install --include=dev && NODE_ENV=production npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: TRUST_PROXY
+        value: "1"
+      # Depois de gerar o APK no PWABuilder, cole aqui o conteúdo do assetlinks.json:
+      # - key: ANDROID_ASSETLINKS
+      #   value: '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{...}}]'
