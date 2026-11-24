@@ -13,7 +13,8 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { MatchHistoryEntry } from '../shared/protocol';
-import type { Loadout, Stats } from '../shared/progression';
+import { EMPTY_STATS, type Loadout, type Stats } from '../shared/progression';
+import { EMPTY_UPGRADES, type UpgradeLevels } from '../shared/upgrades';
 
 export interface UserRecord {
   id: string;
@@ -32,6 +33,52 @@ export interface UserRecord {
   season: { id: string; xp: number; claimed: number[] };
   masteryXp: number;
   history: MatchHistoryEntry[];
+  /** melhorias permanentes compradas */
+  upgrades: UpgradeLevels;
+  /** amizades confirmadas e solicitações pendentes (ids de conta) */
+  friends: string[];
+  friendIn: string[];
+  friendOut: string[];
+  /** códigos de presente já resgatados (maiúsculas) */
+  redeemedCodes: string[];
+  /** histórico de recompensas (mais recentes primeiro) */
+  rewardLog: RewardLogEntry[];
+  /** partidas já recompensadas (impede XP/moedas em dobro) */
+  rewardedMatches: string[];
+  lastSeen: string;
+}
+
+export interface RewardLogEntry {
+  date: string;
+  source: 'partida' | 'conquista' | 'temporada' | 'nivel' | 'codigo' | 'melhoria' | 'loja';
+  desc: string;
+  xp: number;
+  coins: number;
+}
+
+export interface GiftCode {
+  code: string;
+  rewards: { coins?: number; xp?: number; maxLevel?: boolean };
+  /** null = ilimitado */
+  maxUses: number | null;
+  uses: number;
+  expires: string | null;
+  active: boolean;
+  createdAt: string;
+}
+
+/** Preenche campos ausentes (contas criadas por versões anteriores). */
+export function normalizeUser(u: UserRecord): UserRecord {
+  u.upgrades = { ...EMPTY_UPGRADES, ...(u.upgrades ?? {}) };
+  u.friends ??= [];
+  u.friendIn ??= [];
+  u.friendOut ??= [];
+  u.redeemedCodes ??= [];
+  u.rewardLog ??= [];
+  u.rewardedMatches ??= [];
+  u.stats = { ...EMPTY_STATS, ...(u.stats ?? {}) };
+  u.lastSeen ??= u.createdAt;
+  return u;
 }
 
 export interface SessionRecord {
@@ -49,6 +96,11 @@ export interface Store {
   createSession(s: SessionRecord): Promise<void>;
   getSession(tokenHash: string): Promise<SessionRecord | null>;
   deleteSession(tokenHash: string): Promise<void>;
+  /** contas cadastradas (sem convidados) — ranking e busca */
+  listUsers(): Promise<UserRecord[]>;
+  getCode(code: string): Promise<GiftCode | null>;
+  saveCode(c: GiftCode): Promise<void>;
+  listCodes(): Promise<GiftCode[]>;
   flush(): Promise<void>;
 }
 
@@ -56,12 +108,14 @@ interface DbFile {
   version: 1;
   users: UserRecord[];
   sessions: SessionRecord[];
+  codes?: GiftCode[];
 }
 
 export class FileStore implements Store {
   private users = new Map<string, UserRecord>();
   private byName = new Map<string, string>();
   private sessions = new Map<string, SessionRecord>();
+  private codes = new Map<string, GiftCode>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private path: string | null) {}
@@ -71,7 +125,9 @@ export class FileStore implements Store {
     mkdirSync(dirname(this.path), { recursive: true });
     if (!existsSync(this.path)) return;
     const raw = JSON.parse(readFileSync(this.path, 'utf8')) as DbFile;
+    for (const c of raw.codes ?? []) this.codes.set(c.code, c);
     for (const u of raw.users) {
+      normalizeUser(u);
       this.users.set(u.id, u);
       this.byName.set(u.usernameLower, u.id);
     }
@@ -85,6 +141,19 @@ export class FileStore implements Store {
   async getUserByName(n: string) {
     const id = this.byName.get(n);
     return id ? (this.users.get(id) ?? null) : null;
+  }
+  async listUsers() {
+    return [...this.users.values()].filter((u) => !u.guest);
+  }
+  async getCode(code: string) {
+    return this.codes.get(code) ?? null;
+  }
+  async saveCode(c: GiftCode) {
+    this.codes.set(c.code, c);
+    this.schedule();
+  }
+  async listCodes() {
+    return [...this.codes.values()];
   }
   async createUser(u: UserRecord) {
     if (this.byName.has(u.usernameLower)) throw new Error('username_taken');
@@ -131,6 +200,7 @@ export class FileStore implements Store {
       version: 1,
       users,
       sessions: [...this.sessions.values()].filter((s) => s.expires > now && !guestIds.has(s.userId)),
+      codes: [...this.codes.values()],
     };
     const tmp = this.path + '.tmp';
     writeFileSync(tmp, JSON.stringify(data));

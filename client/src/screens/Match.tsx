@@ -9,6 +9,7 @@ import { getSettings, keyLabel } from '../settings';
 import { go, setState, useApp } from '../store';
 import { Bar, Button, enterFullscreen, fmtTime, Modal, rgbCss, type PtrEv } from '../ui/kit';
 import { SettingsPanel } from './Settings';
+import { Minimap } from '../ui/Minimap';
 
 const LORE = [
   'Complexo Abissal, 2.400 m de profundidade. A última transmissão falava de "algo que repete nossas vozes".',
@@ -130,7 +131,7 @@ function Hud(p: { client: GameClient; store: HudStore }) {
       {surv && <div className="threat" style={{ opacity: Math.min(0.9, h.threat * h.threat * 1.2) }} />}
       {h.damage > 0 && <div className="damage" style={{ opacity: h.damage }} />}
       {h.glitch > 0 && <div className="glitch" style={{ opacity: h.glitch }} />}
-      {!h.spectating && <div className={`crosshair ${h.wpn && h.role === 'survivor' ? 'gun' : ''}`} />}
+      {!h.spectating && <div className={`crosshair ${h.wpn && h.role === 'survivor' ? 'gun' : ''} ${h.aimLock ? 'lock' : ''}`} />}
       {h.hit && <div className="hitmarker">✕</div>}
 
       {/* topo: tempo e local */}
@@ -145,8 +146,10 @@ function Hud(p: { client: GameClient; store: HudStore }) {
         </div>
       </div>
 
-      {/* objetivos */}
-      <div className="hud-tl hud-box">
+      {/* minimapa (canto superior esquerdo) + objetivos logo abaixo */}
+      <div className="hud-tl">
+      {!h.spectating && <Minimap client={c} toggle={h.mapToggle} touch={h.touch} />}
+      <div className="hud-box objectives">
         <div className="stage-label">
           FASE {stage}/3 · {h.role === 'entity' ? 'OBJETIVOS DOS SOBREVIVENTES' : 'OBJETIVOS'}
         </div>
@@ -165,6 +168,7 @@ function Hud(p: { client: GameClient; store: HudStore }) {
         <div className="mono muted" style={{ fontSize: 10, marginTop: 6 }}>
           ESCAPARAM {h.escaped}/{h.totalSurv} · NECESSÁRIO {Math.ceil(h.totalSurv / 2)}
         </div>
+      </div>
       </div>
 
       {/* feed */}
@@ -248,11 +252,13 @@ function Hud(p: { client: GameClient; store: HudStore }) {
           </div>
           <div className={`vital st ${h.exhausted ? 'exh' : ''}`}>
             <span style={{ width: 54 }}>{h.exhausted ? 'EXAUSTO' : 'FÔLEGO'}</span>
-            <Bar value={h.stamina / 100} />
+            <Bar value={h.stamina / h.staminaMax} />
+            <span>{Math.round((h.stamina / h.staminaMax) * 100)}%</span>
           </div>
+          {!h.exhausted && h.stamina / h.staminaMax < 0.25 && <div className="low-st">fôlego baixo</div>}
           <div className="row" style={{ gap: 6, marginTop: 4 }}>
             <span className={`tag ${h.flash ? 'accent' : ''}`}>lanterna {h.flash ? 'ligada' : 'desligada'}</span>
-            {h.hp <= 50 && h.status === 'alive' && <span className="tag danger">ferido</span>}
+            {h.hp <= 40 && h.status === 'alive' && <span className="tag danger">ferido</span>}
           </div>
         </div>
       )}

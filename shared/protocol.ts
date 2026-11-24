@@ -81,6 +81,8 @@ export interface MatchPlayerInfo {
 }
 
 export interface MatchIntro {
+  /** modificadores das melhorias do próprio jogador (usados na predição) */
+  mods: import('./upgrades').Mods;
   matchId: string;
   mapId: string;
   seed: number;
@@ -215,6 +217,9 @@ export interface PlayerResult {
   score: number;
   xp: number;
   coins: number;
+  /** composição do XP (participação, desempenho, vitória, fuga, MVP) */
+  xpParts?: { label: string; xp: number }[];
+  mvp?: boolean;
 }
 
 export interface Rewards {
@@ -266,6 +271,48 @@ export interface Profile {
   achievements: string[];
   season: { id: string; xp: number; claimed: number[] };
   masteryXp: number;
+  maxLevel: boolean;
+  upgrades: import('./upgrades').UpgradeLevels;
+  redeemedCodes: string[];
+  rewardLog: RewardLogEntryView[];
+  friendRequests: number;
+}
+
+export interface RewardLogEntryView {
+  date: string;
+  source: string;
+  desc: string;
+  xp: number;
+  coins: number;
+}
+
+export interface RankingEntry {
+  pos: number;
+  id: string;
+  username: string;
+  level: number;
+  totalXp: number;
+  wins: number;
+  matches: number;
+}
+
+export type FriendStatus = 'offline' | 'menu' | 'lobby' | 'partida';
+
+export interface FriendInfo {
+  id: string;
+  username: string;
+  level: number;
+  status: FriendStatus;
+  lastSeen: string;
+  /** código da sala do amigo, se ela estiver aberta para entrar (lobby) */
+  roomCode?: string;
+}
+
+export interface Notice {
+  kind: 'friend_request' | 'friend_accept' | 'invite';
+  from: { id: string; username: string };
+  code?: string;
+  roomName?: string;
 }
 
 export type ClientMsg =
@@ -308,4 +355,5 @@ export type ServerMsg =
   | { t: 'match:end'; results: MatchResults }
   | { t: 'profile'; profile: Profile }
   | { t: 'rtc'; from: string; data: unknown }
-  | { t: 'pong'; c: number; s: number };
+  | { t: 'pong'; c: number; s: number }
+  | { t: 'notice'; n: Notice };

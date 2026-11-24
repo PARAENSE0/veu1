@@ -26,13 +26,15 @@ veu/
 │   ├── map.ts              MapBuilder + Complexo Abissal (salas, portas, luzes, estações)
 │   ├── physics.ts          colisão círculo×grid, movimento determinístico, linha de visão
 │   ├── protocol.ts         tipos das mensagens e snapshots
-│   ├── progression.ts      cosméticos, conquistas, níveis, temporadas
+│   ├── progression.ts      cosméticos, conquistas, níveis (teto 50), temporadas
+│   ├── upgrades.ts         melhorias permanentes e seus modificadores (modsFor)
 │   └── rng.ts              aleatório com semente
 ├── server/
 │   ├── index.ts            ponto de entrada (variáveis de ambiente)
 │   ├── app.ts              HTTP + WebSocket, limites de taxa, roteamento de mensagens
 │   ├── http.ts             API REST, arquivos estáticos, cabeçalhos de segurança
-│   ├── accounts.ts         scrypt, sessões, perfil, loja, recompensas
+│   ├── accounts.ts         scrypt, sessões, perfil, loja, recompensas, melhorias,
+│   │                       códigos de presente, ranking, amigos
 │   ├── rooms.ts            salas, lobby, sorteio da entidade, ciclo da partida
 │   ├── match.ts            simulação autoritativa da partida
 │   ├── tasks.ts            sorteio e estado dos objetivos
@@ -43,11 +45,15 @@ veu/
 │   ├── public/             index.html, styles.css, ícone
 │   └── src/
 │       ├── main.tsx, App.tsx, store.ts, session.ts, net.ts, settings.ts
-│       ├── screens/        Entry, Menu, Lobby, Match (HUD + toque), Profile, Settings, Results
-│       ├── ui/             componentes (kit) e pré-visualização 3D do personagem
-│       └── game/           game.ts, renderer.ts, world.ts, models.ts, textures.ts,
-│                           audio.ts, input.ts, voice.ts, hudstore.ts, math.ts
-├── tests/                  unit.ts, e2e-match.ts (bots), browser-smoke.mjs (Chrome)
+│       ├── screens/        Entry, Menu, Lobby, Match (HUD + toque), Profile, Settings, Results,
+│       │                   Social (Perfil, Ranking, Amigos, Melhorias, Código de presente)
+│       ├── ui/             componentes (kit), pré-visualização 3D, Minimap
+│       └── game/           game.ts, renderer.ts, world.ts, models.ts (armas/caixas),
+│                           characters.ts (humanos e criatura), meshes.ts (malhas orgânicas),
+│                           aim.ts (assistência de mira), textures.ts, audio.ts, input.ts,
+│                           voice.ts, hudstore.ts, math.ts
+├── tests/                  unit.ts, e2e-social.ts, e2e-combat.ts, e2e-weapons.ts,
+│                           e2e-match.ts (bots), browser-smoke.mjs (Chrome), model-shots.mjs
 ├── scripts/                build.mjs (esbuild), check-schema.sh
 ├── typings-offline/        tipos mínimos usados só quando não há @types (ver abaixo)
 └── docs/                   ARQUITETURA, DESIGN, ROADMAP, capturas
@@ -104,3 +110,14 @@ veu/
 ## Sobre `typings-offline/`
 
 O ambiente onde o projeto foi escrito não tinha `@types/react` e `@types/ws`. Para manter a checagem de tipos ativa, `tsconfig.offline.json` inclui declarações mínimas. Num ambiente normal, `npm install` traz os tipos oficiais e `npm run typecheck` usa só o `tsconfig.json`. Os manipuladores de evento usam tipos estruturais compatíveis com os eventos do React.
+
+## Progressão, social e segurança (v0.2)
+- **Recompensas só no servidor**: XP/fragmentos vêm do resultado calculado pela simulação; cada partida recompensa uma conta uma única vez (`rewardedMatches`); o XP para no teto do nível 50.
+- **Códigos de presente**: normalizados (maiúsculas), verificados e aplicados sem nenhuma espera entre a checagem e a gravação (o Node é de uma thread só, então dois pedidos simultâneos não passam juntos — testado com 3 pedidos paralelos). Limite de 10 tentativas/min por conta. No PostgreSQL, a chave primária `(code, user_id)` em `code_redemptions` garante o mesmo.
+- **Administração**: `/api/admin/codes` exige o cabeçalho `x-admin-token` (comparação em tempo constante); sem `ADMIN_TOKEN` configurado, a rota responde 403.
+- **Melhorias**: o servidor confere preço, saldo e nível máximo; os efeitos são calculados por `modsFor()` no início da partida (o cliente recebe os mesmos valores só para a predição de movimento).
+- **Amigos**: listas guardadas nos dois lados; pedidos cruzados viram amizade; convidados não participam; presença vem das conexões WebSocket ativas.
+- **Persistência**: `FileStore` grava tudo (contas, melhorias, amigos, códigos, histórico) em JSON com escrita atômica; `server/db/schema.sql` tem as 14 tabelas equivalentes para produção.
+
+## Personagens 3D
+`meshes.ts` gera superfícies de revolução com seção elíptica e normais suaves (elipsoides, membros afunilados com articulações arredondadas, espinhos, montagem de peças). `characters.ts` monta a criatura e os humanos como cadeias de articulações animadas proceduralmente (andar, correr, agachar, perseguir, atacar, golpe especial, dano, morte; nos humanos, IK de dois ossos segura a arma com as duas mãos). Cada personagem usa ~20 chamadas de desenho e as malhas são criadas uma vez por contexto WebGL. Para usar modelos de artista no futuro, basta substituir as funções de construção por malhas importadas mantendo os mesmos pontos de articulação.

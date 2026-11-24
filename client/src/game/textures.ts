@@ -22,8 +22,16 @@ export const LAYER = {
   GLASS: 13,
   LAMP: 14,
   CRATE: 15,
+  /** pele da criatura: pálida, veias arroxeadas e escorridos de sangue */
+  SKIN_M: 16,
+  /** espinhos/garras: osso marfim que escurece em vermelho na ponta (v=0 base, v=1 ponta) */
+  BONE: 17,
+  TEETH: 18,
+  /** pele humana (tingida pelo tom escolhido) */
+  SKIN: 19,
+  HAIR: 20,
 } as const;
-export const LAYER_COUNT = 16;
+export const LAYER_COUNT = 21;
 
 /** Quanto cada camada brilha por conta própria (emissiva). */
 export const LAYER_EMIT = new Float32Array(LAYER_COUNT);
@@ -392,6 +400,140 @@ painters[LAYER.CRATE] = (c, s, rng) => {
   c.fillText('AB-07', s * 0.28, s * 0.55);
   grime(c, s, rng, 10, 'rgba(0,0,0,0.3)', s / 4);
   noise(c, s, rng, 22);
+};
+
+/** Desenha repetindo nas bordas para a textura emendar sem costura. */
+function wrapped(c: Ctx, s: number, draw: (ox: number, oy: number) => void) {
+  for (const ox of [-s, 0, s]) for (const oy of [-s, 0, s]) draw(ox, oy);
+}
+
+painters[LAYER.SKIN_M] = (c, s, rng) => {
+  // base pálida lilás-acinzentada com manchas
+  c.fillStyle = '#d8d0d8';
+  c.fillRect(0, 0, s, s);
+  for (let i = 0; i < 26; i++) {
+    const x = rng.next() * s, y = rng.next() * s, r = rng.range(s / 14, s / 4);
+    const tone = rng.next() < 0.5 ? 'rgba(150,140,190,0.22)' : 'rgba(235,215,200,0.25)';
+    wrapped(c, s, (ox, oy) => {
+      const g = c.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r);
+      g.addColorStop(0, tone);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.fillStyle = g;
+      c.fillRect(x + ox - r, y + oy - r, r * 2, r * 2);
+    });
+  }
+  // veias ramificadas (azul-arroxeadas)
+  const vein = (x: number, y: number, ang: number, w: number, depth: number) => {
+    let px = x, py = y, a = ang;
+    const steps = 8 + Math.floor(rng.next() * 8);
+    for (let k = 0; k < steps; k++) {
+      const nx = px + (Math.cos(a) * s) / 30, ny = py + (Math.sin(a) * s) / 30;
+      c.strokeStyle = `rgba(95,80,150,${Math.min(0.6, 0.25 + 0.2 * (w / (s / 80)))})`;
+      c.lineWidth = w;
+      wrapped(c, s, (ox, oy) => {
+        c.beginPath();
+        c.moveTo(px + ox, py + oy);
+        c.lineTo(nx + ox, ny + oy);
+        c.stroke();
+      });
+      px = nx;
+      py = ny;
+      a += rng.range(-0.5, 0.5);
+      w *= 0.93;
+      if (depth < 2 && rng.next() < 0.18) vein(px, py, a + rng.range(-1.2, 1.2), w * 0.7, depth + 1);
+    }
+  };
+  for (let i = 0; i < 14; i++) vein(rng.next() * s, rng.next() * s, rng.next() * Math.PI * 2, rng.range(s / 160, s / 80), 0);
+  // sangue: escorridos verticais e respingos
+  for (let i = 0; i < 18; i++) {
+    const x = rng.next() * s, y = rng.next() * s, len = rng.range(s / 10, s / 2.5), w = rng.range(s / 120, s / 45);
+    wrapped(c, s, (ox, oy) => {
+      const g = c.createLinearGradient(0, y + oy, 0, y + oy + len);
+      g.addColorStop(0, 'rgba(120,8,10,0.85)');
+      g.addColorStop(0.7, 'rgba(150,15,15,0.55)');
+      g.addColorStop(1, 'rgba(150,15,15,0)');
+      c.fillStyle = g;
+      c.beginPath();
+      c.ellipse(x + ox, y + oy + len / 2, w, len / 2, 0, 0, Math.PI * 2);
+      c.fill();
+    });
+  }
+  for (let i = 0; i < 40; i++) {
+    const x = rng.next() * s, y = rng.next() * s, r = rng.range(1, s / 70);
+    c.fillStyle = `rgba(130,10,12,${rng.range(0.4, 0.9)})`;
+    wrapped(c, s, (ox, oy) => {
+      c.beginPath();
+      c.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      c.fill();
+    });
+  }
+  noise(c, s, rng, 22);
+};
+
+painters[LAYER.BONE] = (c, s, rng) => {
+  const g = c.createLinearGradient(0, 0, 0, s);
+  // topo do canvas = base do espinho (v=0); embaixo = ponta (v=1)
+  g.addColorStop(0, '#ece3cb');
+  g.addColorStop(0.45, '#d9c9a4');
+  g.addColorStop(0.75, '#9c4a32');
+  g.addColorStop(1, '#5a0c0c');
+  c.fillStyle = g;
+  c.fillRect(0, 0, s, s);
+  for (let i = 0; i < 30; i++) {
+    c.strokeStyle = `rgba(90,20,15,${rng.range(0.1, 0.35)})`;
+    c.lineWidth = rng.range(1, s / 90);
+    const x = rng.next() * s;
+    c.beginPath();
+    c.moveTo(x, rng.range(0, s * 0.5));
+    c.lineTo(x + rng.range(-s / 40, s / 40), s);
+    c.stroke();
+  }
+  noise(c, s, rng, 16);
+};
+
+painters[LAYER.TEETH] = (c, s, rng) => {
+  // esmalte amarelado uniforme (os dentes são pequenos: qualquer trecho da textura serve)
+  c.fillStyle = '#e8dfc4';
+  c.fillRect(0, 0, s, s);
+  for (let i = 0; i < 20; i++) {
+    c.fillStyle = `rgba(150,110,60,${rng.range(0.03, 0.08)})`;
+    c.beginPath();
+    c.arc(rng.next() * s, rng.next() * s, rng.range(s / 20, s / 6), 0, Math.PI * 2);
+    c.fill();
+  }
+  noise(c, s, rng, 10);
+};
+
+painters[LAYER.SKIN] = (c, s, rng) => {
+  c.fillStyle = '#e8e0da';
+  c.fillRect(0, 0, s, s);
+  for (let i = 0; i < 60; i++) {
+    const x = rng.next() * s, y = rng.next() * s, r = rng.range(s / 30, s / 8);
+    c.fillStyle = rng.next() < 0.5 ? 'rgba(200,150,140,0.06)' : 'rgba(255,255,255,0.05)';
+    wrapped(c, s, (ox, oy) => {
+      c.beginPath();
+      c.arc(x + ox, y + oy, r, 0, Math.PI * 2);
+      c.fill();
+    });
+  }
+  noise(c, s, rng, 10);
+};
+
+painters[LAYER.HAIR] = (c, s, rng) => {
+  c.fillStyle = '#9a9a9a';
+  c.fillRect(0, 0, s, s);
+  for (let i = 0; i < 500; i++) {
+    const x = rng.next() * s, y = rng.next() * s, len = rng.range(s / 12, s / 4);
+    const dx1 = rng.range(-3, 3), dx2 = rng.range(-4, 4);
+    c.strokeStyle = rng.next() < 0.5 ? `rgba(0,0,0,${rng.range(0.1, 0.3)})` : `rgba(255,255,255,${rng.range(0.05, 0.18)})`;
+    c.lineWidth = rng.range(0.6, 1.6);
+    wrapped(c, s, (ox, oy) => {
+      c.beginPath();
+      c.moveTo(x + ox, y + oy);
+      c.quadraticCurveTo(x + ox + dx1, y + oy + len / 2, x + ox + dx2, y + oy + len);
+      c.stroke();
+    });
+  }
 };
 
 export function buildTextureLayers(size: number): ImageData[] {

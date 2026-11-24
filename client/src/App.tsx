@@ -8,6 +8,7 @@ import { MainMenu, PlayScreen } from './screens/Menu';
 import { CollectionScreen, CustomizeScreen, HistoryScreen, ShopScreen, StatsScreen } from './screens/Profile';
 import { ResultsScreen } from './screens/Results';
 import { SettingsScreen } from './screens/Settings';
+import { FriendsScreen, GiftCodeScreen, InviteBanner, ProfileScreen, RankingScreen, UpgradesScreen } from './screens/Social';
 import { getSettings, subscribeSettings } from './settings';
 import { useApp } from './store';
 
@@ -75,10 +76,26 @@ export function App() {
     case 'results':
       view = <ResultsScreen />;
       break;
+    case 'profile':
+      view = <ProfileScreen />;
+      break;
+    case 'ranking':
+      view = <RankingScreen />;
+      break;
+    case 'friends':
+      view = <FriendsScreen />;
+      break;
+    case 'upgrades':
+      view = <UpgradesScreen />;
+      break;
+    case 'gift':
+      view = <GiftCodeScreen />;
+      break;
   }
   return (
     <>
       {view}
+      <InviteBanner />
       <div className="toasts" role="status" aria-live="polite">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.tone}`}>

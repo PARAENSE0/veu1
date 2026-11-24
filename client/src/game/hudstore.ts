@@ -16,6 +16,9 @@ export interface HudState {
   status: PStatus;
   hp: number;
   stamina: number;
+  mapToggle: number;
+  aimLock: boolean;
+  staminaMax: number;
   exhausted: boolean;
   inv: (ItemKind | null)[];
   detCharges: number;
@@ -58,7 +61,7 @@ export interface HudState {
   hit: boolean;
 }
 
-const zero = { rastro: 0, eco: 0, ruptura: 0, parasita: 0 };
+const zero = { rastro: 0, eco: 0, ruptura: 0, parasita: 0, golpe: 0 };
 
 export function emptyHud(): HudState {
   return {
@@ -67,6 +70,9 @@ export function emptyHud(): HudState {
     status: 'alive',
     hp: 100,
     stamina: 100,
+    mapToggle: 0,
+    aimLock: false,
+    staminaMax: 100,
     exhausted: false,
     inv: [null, null, null, null],
     detCharges: 0,

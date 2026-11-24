@@ -56,7 +56,8 @@ async function newPlayer(name, touch) {
   const page = await ctx.newPage();
   page.on('pageerror', (e) => errors.push(`${name}: ${e.message}`));
   page.on('console', (m) => {
-    if (m.type() === 'error') errors.push(`${name}: ${m.text()}`);
+    // respostas 400 esperadas (código inválido/repetido) aparecem como "Failed to load resource"
+    if (m.type() === 'error' && !/status of 400/.test(m.text())) errors.push(`${name}: ${m.text()}`);
   });
   await page.addInitScript((t) => localStorage.setItem('veu.settings.v1', JSON.stringify({ touchControls: t ? 'sempre' : 'nunca', quality: 'media', showFps: true })), touch);
   await page.goto(BASE);
@@ -79,7 +80,7 @@ try {
   await a.fill('#p2', 'senha-segura-1');
   await shot(a, '02-cadastro.png');
   await a.getByRole('button', { name: 'Criar conta' }).last().click();
-  await a.getByText('Personalização').waitFor({ timeout: 5000 });
+  await a.locator('.menu-item', { hasText: 'Perfil' }).waitFor({ timeout: 5000 });
   check(true, 'cadastro pela interface leva ao menu principal');
   await shot(a, '03-menu.png');
 
@@ -88,29 +89,82 @@ try {
   await b.getByRole('tab', { name: 'Convidado' }).click();
   await b.fill('#u', 'Beto');
   await b.getByRole('button', { name: 'Jogar como convidado' }).click();
-  await b.getByText('Personalização').waitFor({ timeout: 5000 });
+  await b.locator('.menu-item', { hasText: 'Perfil' }).waitFor({ timeout: 5000 });
   check(true, 'entrada como convidado');
 
   console.log('[2] Telas do menu');
+  const menuLabels = await a.locator('.menu-item span').allTextContents();
+  check(['Jogar', 'Perfil', 'Ranking', 'Amigos', 'Melhorias', 'Código de presente', 'Estatísticas', 'Configurações'].every((l) => menuLabels.includes(l)), `menu: ${menuLabels.join(' · ')}`);
   for (const [item, title, file] of [
-    ['Loja de cosméticos', 'Loja de cosméticos', '04-loja.png'],
-    ['Inventário', 'Inventário', '05-inventario.png'],
+    ['Perfil', 'Perfil', '04-perfil.png'],
+    ['Ranking', 'Ranking', '05-ranking.png'],
+    ['Amigos', 'Amigos', '05b-amigos.png'],
     ['Estatísticas', 'Estatísticas e progresso', '06-estatisticas.png'],
     ['Configurações', 'Configurações', '07-configuracoes.png'],
   ]) {
-    await a.locator('.menu-item', { hasText: item }).click();
-    await a.getByRole('heading', { name: title }).waitFor({ timeout: 3000 });
+    await a.locator('.menu-item', { hasText: item }).first().click();
+    await a.getByRole('heading', { name: title, exact: true }).waitFor({ timeout: 3000 });
+    await sleep(300);
     await shot(a, file);
     await a.getByRole('button', { name: '← Voltar' }).click();
     check(true, `tela "${title}" abre e volta`);
   }
-  await a.locator('.menu-item', { hasText: 'Personalização' }).click();
+  // ranking mostra a conta registrada
+  await a.locator('.menu-item', { hasText: 'Ranking' }).click();
+  await a.locator('table.rank tbody tr', { hasText: 'anabeatriz' }).waitFor({ timeout: 4000 });
+  check((await a.locator('table.rank tr.me').count()) === 1, 'ranking online lista o jogador e destaca a própria linha');
+  await a.getByRole('button', { name: '← Voltar' }).click();
+  // código de presente pela interface
+  await a.locator('.menu-item', { hasText: 'Código de presente' }).click();
+  await a.fill('#gift', 'NAOVALE1');
+  await a.getByRole('button', { name: 'Resgatar' }).click();
+  await a.getByText('Código inválido.').waitFor({ timeout: 4000 });
+  check(true, 'código inválido: mensagem "Código inválido."');
+  await a.fill('#gift', 'paraense01');
+  await a.getByRole('button', { name: 'Resgatar' }).click();
+  await a.getByText(/Código resgatado com sucesso!.*nível 1 → 50.*20\.000 fragmentos/).waitFor({ timeout: 4000 });
+  await shot(a, '06b-codigo-presente.png');
+  check(true, 'PARAENSE01 pela interface: nível 1 → 50 e +20.000 fragmentos');
+  await a.fill('#gift', 'PARAENSE01');
+  await a.getByRole('button', { name: 'Resgatar' }).click();
+  await a.getByText('Você já resgatou este código.').waitFor({ timeout: 4000 });
+  check(true, 'segunda tentativa: "Você já resgatou este código."');
+  await a.getByRole('button', { name: '← Voltar' }).click();
+  check(await a.getByText('NÍVEL MÁXIMO 50').isVisible(), 'menu mostra NÍVEL MÁXIMO 50');
+  // melhorias pela interface
+  await a.locator('.menu-item', { hasText: 'Melhorias' }).click();
+  const card = a.locator('.upgrade', { hasText: 'Estamina máxima' });
+  await card.getByRole('button', { name: /Comprar nível 1/ }).click();
+  await card.getByRole('button', { name: /Comprar nível 2/ }).waitFor({ timeout: 4000 });
+  check((await card.locator('.pips i.on').count()) === 1, 'melhoria comprada: Estamina máxima nível 1 (servidor confirmou)');
+  await a.locator('.tab', { hasText: 'Monstro' }).click();
+  await a.locator('.upgrade', { hasText: 'Poder de ataque' }).waitFor({ timeout: 2000 });
+  await shot(a, '06c-melhorias.png');
+  await a.getByRole('button', { name: '← Voltar' }).click();
+  // perfil → loja / inventário / personalização
+  await a.locator('.menu-item', { hasText: 'Perfil' }).click();
+  for (const [btnName, title] of [
+    ['Loja de cosméticos', 'Loja de cosméticos'],
+    [/Inventário/, 'Inventário'],
+  ]) {
+    await a.getByRole('button', { name: btnName }).click();
+    await a.getByRole('heading', { name: title }).waitFor({ timeout: 3000 });
+    await a.getByRole('button', { name: '← Voltar' }).click();
+    await a.getByRole('heading', { name: 'Perfil', exact: true }).waitFor({ timeout: 3000 });
+    check(true, `Perfil → ${title} abre e volta ao Perfil`);
+  }
+  check(await a.getByText('Código PARAENSE01').isVisible(), 'histórico de recompensas mostra o código resgatado');
+  await a.getByRole('button', { name: 'Personalização' }).click();
   await a.locator('.tab', { hasText: 'Roupa' }).click();
   await a.locator('.card', { hasText: 'Jaqueta térmica' }).click();
   await a.getByRole('button', { name: 'Salvar' }).click();
   await a.getByText('Aparência salva.').waitFor({ timeout: 3000 });
   await shot(a, '08-personalizacao.png');
   check(true, 'personalização salva no servidor');
+  await a.locator('.tab', { hasText: 'Entidade' }).click();
+  await sleep(800);
+  await shot(a, '08b-personalizacao-entidade.png');
+  await a.getByRole('button', { name: '← Voltar' }).click();
   await a.getByRole('button', { name: '← Voltar' }).click();
 
   console.log('[3] Sala, código, lobby e voz');
@@ -158,7 +212,8 @@ try {
   const ha = await hud(a);
   const hb = await hud(b);
   check(ha.role === 'survivor' && hb.role === 'entity', 'funções: Ana sobrevivente, Beto entidade');
-  check(ha.tasks.length === 2, 'objetivos da fase 1 aparecem no HUD');
+  const tasksOk = await a.waitForFunction(() => window.__veu.hud.state.tasks.length === 2, null, { timeout: 5000, polling: 100 }).then(() => true, () => false);
+  check(tasksOk, `objetivos da fase 1 aparecem no HUD (${(await hud(a)).tasks.length})`);
   await shot(a, '10-partida-clique.png');
   await a.mouse.click(640, 360);
   await sleep(400);
@@ -175,7 +230,17 @@ try {
   check(moved > 2, `movimento WASD + corrida (${moved.toFixed(1)} m)`);
   check(srv < 0.6, `posição prevista confere com a do servidor (diferença ${srv.toFixed(2)} m)`);
   const h2 = await hud(a);
-  check(h2.stamina < 100, 'correr consome fôlego');
+  check(h2.stamina < h2.staminaMax && h2.staminaMax === 105, `correr consome fôlego (máximo 105 com a melhoria nível 1: ${h2.stamina.toFixed(0)}/${h2.staminaMax})`);
+  // minimapa no canto superior esquerdo
+  const mm = await a.locator('.minimap canvas').boundingBox();
+  check(mm && mm.x < 40 && mm.y < 40 && mm.width > 100, `minimapa no canto superior esquerdo (${mm && Math.round(mm.x)},${mm && Math.round(mm.y)} ${mm && Math.round(mm.width)}x${mm && Math.round(mm.height)})`);
+  await a.keyboard.press('KeyM');
+  await a.locator('.minimap.big').waitFor({ timeout: 2000 });
+  await sleep(300);
+  await shot(a, '11b-minimapa-ampliado.png');
+  check(true, 'tecla M amplia o minimapa');
+  await a.keyboard.press('KeyM');
+  check(await a.locator('.minimap.big').waitFor({ state: 'detached', timeout: 2000 }).then(() => true, () => false), 'tecla M reduz de novo');
   await shot(a, '11-sobrevivente-1p.png');
   await a.keyboard.press('KeyC');
   await sleep(400);
@@ -242,6 +307,10 @@ try {
   await b.keyboard.up('KeyW');
   await b.keyboard.press('KeyF');
   check(await until(b, () => window.__veu.hud.state.cd.parasita > 0), 'entidade usa PARASITA (F)');
+  await until(b, () => window.__veu.hud.state.act.ruptura === 0 && window.__veu.hud.state.attackCd === 0, 8000);
+  await sleep(300);
+  await b.locator('.ability', { hasText: 'GOLPE BRUTAL' }).click();
+  check(await until(b, () => window.__veu.hud.state.cd.golpe > 0), 'entidade usa GOLPE BRUTAL (botão de toque)');
   await shot(b, '15-entidade-toque.png');
   const db = await dbg(b);
   check(db.fps > 0 && db.drawCalls > 10, `renderização ativa (${db.fps} FPS em software, ${db.drawCalls} chamadas)`);
@@ -252,6 +321,8 @@ try {
   await a.locator('.tab', { hasText: 'Gráficos' }).waitFor();
   await shot(a, '16-menu-config-partida.png');
   check(true, 'menu da partida e configurações abrem (Esc)');
+  await a.locator('.tab', { hasText: 'Controles' }).click();
+  check(await a.getByText('Assistência de mira', { exact: true }).isVisible(), 'configuração "Assistência de mira" disponível');
   await a.locator('.tab', { hasText: 'Gráficos' }).click();
   await a.getByRole('button', { name: 'Voltar', exact: true }).click();
   await a.getByRole('button', { name: 'Voltar ao jogo' }).click();
@@ -266,7 +337,8 @@ try {
   await a.locator('.code-box').waitFor({ timeout: 3000 });
   check(true, 'retorno ao lobby após a partida');
   await a.getByRole('button', { name: '← Voltar' }).click();
-  await a.locator('.menu-item', { hasText: 'Histórico de partidas' }).click();
+  await a.locator('.menu-item', { hasText: 'Perfil' }).click();
+  await a.getByRole('button', { name: 'Histórico de partidas' }).click();
   await a.locator('table.list tbody tr').first().waitFor({ timeout: 3000 });
   await shot(a, '18-historico.png');
   check((await a.locator('table.list tbody tr').count()) === 1, 'histórico mostra a partida');

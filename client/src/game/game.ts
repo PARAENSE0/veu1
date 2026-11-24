@@ -7,18 +7,19 @@
  * - Jogadores remotos são interpolados ~110 ms no passado.
  * - Nada é decidido aqui: ações são enviadas como intenção ao servidor.
  */
-import { ABILITIES, CELL, DT, FLAMER, GUNS, SUPPLY_INFO, WEAPON_ORDER, type SupplyKind, type WeaponId, ENT, ENTITY_AUDIBLE_RADIUS, EYE_HEIGHT, CROUCH_EYE, DOWNED_EYE, ENTITY_EYE, INTERACT_RANGE, INTERP_DELAY_MS, ITEM_INFO, PLAYER_RADIUS, SURV, WALL_H, type AbilityId } from '../../../shared/constants';
+import { ABILITIES, AUTO_DOOR_RANGE, CELL, DT, FLAMER, GUNS, SUPPLY_INFO, WEAPON_ORDER, type SupplyKind, type WeaponId, ENT, ENTITY_AUDIBLE_RADIUS, EYE_HEIGHT, CROUCH_EYE, DOWNED_EYE, ENTITY_EYE, INTERACT_RANGE, INTERP_DELAY_MS, ITEM_INFO, PLAYER_RADIUS, SURV, WALL_H, type AbilityId } from '../../../shared/constants';
 import { getMap, type MapDef } from '../../../shared/map';
 import { BTN, isOpaque, isSolid, lineOfSight, makeGrid, pickTarget, raycast, stepMove, type Grid, type InputCmd, type MoveParams, type MoveState } from '../../../shared/physics';
 import { resolveAppearance, type Appearance, type Loadout } from '../../../shared/progression';
 import { PF, type EcoType, type GameEvent, type MatchIntro, type ServerMsg, type Snapshot } from '../../../shared/protocol';
-import { getSettings, qualityOf, subscribeSettings } from '../settings';
+import { getSettings, qualityOf, subscribeSettings, updateSettings } from '../settings';
 import type { Net } from '../net';
 import { audio } from './audio';
 import { HudStore, type FeedLine } from './hudstore';
 import { Input } from './input';
 import { clamp, lerp, lerpAngle, mat4, rotX, rotY, scale, translate, identity } from './math';
 import { drawEntity, drawSupply, drawSurvivor, drawWeapon } from './models';
+import { aimAssist, aimParams, type AimLevel } from './aim';
 import { Renderer, type Mesh, type PointLight, type SpotLight } from './renderer';
 import { LAYER } from './textures';
 import { buildWorldGeom } from './world';
@@ -54,6 +55,8 @@ interface Remote {
   lastZ: number;
   attackAt: number;
   abilityAt: Partial<Record<AbilityId, number>>;
+  hitAt: number;
+  deathAt: number;
 }
 
 function weaponOf(f: number): WeaponId {
@@ -175,7 +178,7 @@ export class GameClient {
   }
 
   private newRemote(id: string, name: string, role: 'survivor' | 'entity', loadout: Loadout): Remote {
-    return { id, name, role, ap: resolveAppearance(loadout), buf: [], visible: false, x: 0, z: 0, yaw: 0, pitch: 0, f: 0, spd: 0, phase: 0, stepAcc: 0, lastX: 0, lastZ: 0, attackAt: -9, abilityAt: {} };
+    return { id, name, role, ap: resolveAppearance(loadout), buf: [], visible: false, x: 0, z: 0, yaw: 0, pitch: 0, f: 0, spd: 0, phase: 0, stepAcc: 0, lastX: 0, lastZ: 0, attackAt: -9, abilityAt: {}, hitAt: -9, deathAt: -9 };
   }
 
   get role() {
@@ -246,7 +249,10 @@ export class GameClient {
     this.pending = this.pending.filter((c) => c.seq > you.ack);
     if (!you.hidden && (you.st === 'alive' || you.st === 'downed')) {
       const p = this.params();
-      for (const c of this.pending) stepMove(this.grid, this.pred, c, p);
+      for (const c of this.pending) {
+        this.predictDoors();
+        stepMove(this.grid, this.pred, c, p);
+      }
     }
     if (first) {
       this.smoothX = this.smoothZ = 0;
@@ -302,6 +308,11 @@ export class GameClient {
         if (e.target === this.intro.you) {
           this.damageFlash = 1;
           this.shake = 0.6;
+          this.myHitAt = this.time;
+        }
+        {
+          const t = this.remotes.get(e.target);
+          if (t) t.hitAt = this.time;
         }
         break;
       case 'shot': {
@@ -327,12 +338,16 @@ export class GameClient {
         const glow = [...this.remotes.values()].find((r) => r.role === 'entity')?.ap.entGlow ?? this.myAp.entGlow;
         this.burst(e.x, e.y, e.z, 8, [glow[0] * 0.8, glow[1] * 0.5, glow[2] * 0.5], 3);
         if (e.by === this.intro.you) this.hitT = this.time;
+        for (const rm of this.remotes.values()) if (rm.role === 'entity') rm.hitAt = this.time;
+        if (this.role === 'entity') this.myHitAt = this.time;
         break;
       }
       case 'supply':
         this.burst(e.x, 0.4, e.z, 14, SUPPLY_INFO[e.kind].color, 2.5);
         break;
       case 'entdeath':
+        for (const rm of this.remotes.values()) if (rm.role === 'entity') rm.deathAt = this.time;
+        if (this.role === 'entity') this.myDeathAt = this.time;
         for (let i = 0; i < 6; i++) this.burst(e.x + (Math.random() - 0.5), 1 + Math.random() * 1.5, e.z + (Math.random() - 0.5), 25, [1, 0.35, 0.2], 6);
         this.feedLine(e.by === this.intro.you ? 'Você destruiu a entidade!' : `${this.nameOf(e.by)} destruiu a entidade!`, 'good');
         this.shake = 1;
@@ -410,15 +425,33 @@ export class GameClient {
   private deadIds = new Set<string>();
   private escapedIds = new Set<string>();
   private myAbilityAt: Partial<Record<AbilityId, number>> = {};
+  private myHitAt = -9;
+  private myDeathAt = -9;
 
   // ------------------------------------------------------------------ entrada / predição
+  /**
+   * Predição das portas automáticas: o servidor abre a porta quando um humano
+   * chega a AUTO_DOOR_RANGE do vão; aqui antecipamos a abertura localmente
+   * para não "bater" na porta durante a latência. O próximo snapshot manda.
+   */
+  private predictDoors() {
+    if (this.role !== 'survivor' || !this.snap) return;
+    const locked = this.snap.locked;
+    for (const d of this.map.doors) {
+      if (d.secure || this.grid.doorOpen[d.idx] || locked.includes(d.idx)) continue;
+      const bx = Math.max(Math.abs(this.pred.x - d.x) - CELL / 2, 0);
+      const bz = Math.max(Math.abs(this.pred.z - d.z) - CELL / 2, 0);
+      if (Math.hypot(bx, bz) <= AUTO_DOOR_RANGE) this.grid.doorOpen[d.idx] = 1;
+    }
+  }
+
   private params(): MoveParams {
     const you = this.snap?.you;
     if (this.role === 'entity') {
       return { walk: ENT.speed, sprint: ENT.speed, crouch: ENT.stalkSpeed, mult: you?.mult ?? 1, radius: ENT.radius, useStamina: false, canMove: you?.canMove ?? true, canSprint: false };
     }
     if (you?.st === 'downed') return { walk: SURV.crawl, sprint: SURV.crawl, crouch: SURV.crawl, mult: 1, radius: PLAYER_RADIUS, useStamina: false, canMove: true, canSprint: false };
-    return { walk: SURV.walk, sprint: SURV.sprint, crouch: SURV.crouch, mult: you?.mult ?? 1, radius: PLAYER_RADIUS, useStamina: true, canMove: you?.canMove ?? true, canSprint: you?.canSprint ?? true };
+    return { walk: SURV.walk, sprint: SURV.sprint, crouch: SURV.crouch, mult: you?.mult ?? 1, radius: PLAYER_RADIUS, useStamina: true, canMove: you?.canMove ?? true, canSprint: you?.canSprint ?? true, staminaMax: this.intro.mods?.staminaMax, staminaRegenMult: this.intro.mods?.staminaRegenMult };
   }
 
   private spectating() {
@@ -508,10 +541,15 @@ export class GameClient {
       if (inp.pressed('eco')) send({ t: 'act', a: 'ability', id: 'eco', variant: this.ecoSel });
       if (inp.pressed('ruptura')) send({ t: 'act', a: 'ability', id: 'ruptura' });
       if (inp.pressed('parasita')) send({ t: 'act', a: 'ability', id: 'parasita' });
+      if (inp.pressed('golpe') || this.touchSpecial) {
+        send({ t: 'act', a: 'ability', id: 'golpe' });
+        this.touchSpecial = false;
+      }
       if (inp.pressed('ecoProximo') || inp.wheel !== 0) this.cycleEco(inp.wheel < 0 ? -1 : 1);
     }
   }
   touchAttack = false;
+  touchSpecial = false;
   private firing = false;
 
   /** Troca para a próxima/anterior arma (o servidor confirma pelo snapshot). */
@@ -572,6 +610,55 @@ export class GameClient {
     this.pushHud();
   }
 
+  // ------------------------------------------------------------------ minimapa
+  /**
+   * Dados do minimapa: estrutura real do mapa, portas, a própria posição e
+   * direção, e só o que o jogador já tem direito de ver (companheiros que
+   * estão visíveis agora, objetivos ativos listados no HUD). A entidade nunca
+   * aparece no minimapa dos sobreviventes, e os sobreviventes não aparecem no
+   * da entidade.
+   */
+  minimapInfo() {
+    const snap = this.snap;
+    const me = this.myPos();
+    const stations = new Set<string>();
+    for (const t of snap?.tasks ?? []) if (t.active && !t.done) for (const id of t.stations) if (!t.doneStations.includes(id)) stations.add(id);
+    const mates: { x: number; z: number; downed: boolean }[] = [];
+    if (this.role === 'survivor')
+      for (const rm of this.remotes.values()) if (rm.role === 'survivor' && rm.visible) mates.push({ x: rm.x, z: rm.z, downed: !!(rm.f & PF.DOWNED) });
+    return {
+      map: this.map,
+      doorOpen: this.grid.doorOpen,
+      locked: snap?.locked ?? [],
+      me: { x: me.x, z: me.z, yaw: this.yaw },
+      mates,
+      stations: this.map.stations.filter((st) => stations.has(st.id)),
+      pods: snap?.pods ?? [],
+      detector: this.detectorMark && this.detectorMark.until > this.time ? this.detectorMark : null,
+    };
+  }
+  /** Tecla M: ampliar/reduzir (lida pela interface). */
+  minimapToggle = 0;
+
+  // ------------------------------------------------------------------ mira assistida
+  aimEngaged = false;
+  private aimStep(dt: number, touch: boolean, level: AimLevel) {
+    const you = this.snap?.you;
+    const none = { dyaw: 0, dpitch: 0, sens: 1, engaged: false };
+    if (this.role !== 'survivor' || !you || you.st !== 'alive' || you.hidden || !you.wpn || this.spectating()) return (this.aimEngaged = false), none;
+    let ent: Remote | null = null;
+    for (const rm of this.remotes.values()) if (rm.role === 'entity' && rm.visible && !(rm.f & PF.CAMO)) ent = rm;
+    const eyeY = this.pred.crouch ? CROUCH_EYE : EYE_HEIGHT;
+    const eye = { x: this.pred.x + this.smoothX, y: eyeY, z: this.pred.z + this.smoothZ };
+    const sel = you.wpn.sel;
+    const range = sel === 'lanca' ? FLAMER.range : GUNS[sel].range;
+    const target = ent ? { x: ent.x, y: 1.45, z: ent.z, radius: 0.55 } : null;
+    const visible = !!target && lineOfSight(this.grid, eye.x, eye.z, target.x, target.z);
+    const r = aimAssist({ eye, yaw: this.yaw, pitch: this.pitch, target, range, visible, dt, params: aimParams(level, touch) });
+    this.aimEngaged = r.engaged;
+    return r;
+  }
+
   // ------------------------------------------------------------------ quadro
   private myPos() {
     const you = this.snap?.you;
@@ -589,12 +676,25 @@ export class GameClient {
     // olhar
     if (this.controlsActive() && !this.inventoryOpen) {
       const touch = inp.isTouch();
-      const k = touch ? 0.006 * s.touchSens : 0.0022 * s.mouseSens;
+      const assist = this.aimStep(dt, touch, s.aimAssist);
+      const k = (touch ? 0.006 * s.touchSens : 0.0022 * s.mouseSens) * assist.sens;
       this.yaw -= inp.lookDX * k;
       this.pitch -= inp.lookDY * k * (s.invertY ? -1 : 1);
+      this.yaw += assist.dyaw;
+      this.pitch += assist.dpitch;
       this.pitch = clamp(this.pitch, -1.4, 1.4);
       if (this.yaw > Math.PI) this.yaw -= Math.PI * 2;
       if (this.yaw < -Math.PI) this.yaw += Math.PI * 2;
+    }
+    if (inp.pressed('mapa')) {
+      this.minimapToggle++;
+      this.pushHud();
+    }
+    if (inp.pressed('mira') && this.role === 'survivor') {
+      const cur = getSettings().aimAssist;
+      const next = cur === 'desligada' ? 'auto' : 'desligada';
+      updateSettings({ aimAssist: next });
+      this.feedLine(next === 'desligada' ? 'Assistência de mira desligada.' : 'Assistência de mira ligada.', 'info');
     }
     if (inp.keyPressed('Escape')) {
       if (this.inventoryOpen) this.closeInventory();
@@ -615,7 +715,10 @@ export class GameClient {
           this.net.send({ t: 'in', cmds: [cmd] });
           this.pending.push(cmd);
           if (this.pending.length > 90) this.pending.shift();
-          if (!you.hidden) stepMove(this.grid, this.pred, cmd, this.params());
+          if (!you.hidden) {
+            this.predictDoors();
+            stepMove(this.grid, this.pred, cmd, this.params());
+          }
         }
       }
       if (this.acc > DT * 4) this.acc = 0;
@@ -846,7 +949,7 @@ export class GameClient {
     for (const rm of this.remotes.values()) {
       if (!rm.visible || rm.f & PF.HIDDEN) continue;
       if (rm.role === 'survivor') {
-        drawSurvivor(r, rm.ap, { x: rm.x, z: rm.z, yaw: rm.yaw, pitch: rm.pitch, speed: rm.spd, phase: rm.phase, crouch: !!(rm.f & PF.CROUCH), downed: !!(rm.f & PF.DOWNED), channel: !!(rm.f & (PF.CHANNEL | PF.HEALING)), flash: !!(rm.f & PF.FLASH), time: this.time, weapon: weaponOf(rm.f), firing: !!(rm.f & PF.FIRE), reloading: !!(rm.f & PF.RELOAD), collecting: !!(rm.f & PF.COLLECT) }, { alpha: 1, emit: heat });
+        drawSurvivor(r, rm.ap, { x: rm.x, z: rm.z, yaw: rm.yaw, pitch: rm.pitch, speed: rm.spd, phase: rm.phase, crouch: !!(rm.f & PF.CROUCH), downed: !!(rm.f & PF.DOWNED), channel: !!(rm.f & (PF.CHANNEL | PF.HEALING)), flash: !!(rm.f & PF.FLASH), time: this.time, weapon: weaponOf(rm.f), firing: !!(rm.f & PF.FIRE), reloading: !!(rm.f & PF.RELOAD), collecting: !!(rm.f & PF.COLLECT), hit: Math.max(0, 1 - (this.time - rm.hitAt) / 0.35) }, { alpha: 1, emit: heat });
       } else if (!(rm.f & PF.CAMO)) {
         drawEntity(r, rm.ap.entBody, rm.ap.entGlow, this.entityPose(rm), { alpha: 1, emit: [0, 0, 0] });
       }
@@ -935,9 +1038,11 @@ export class GameClient {
     this.drawOverlay(cam);
   }
 
-  private entityPose(rm: { x: number; z: number; yaw: number; pitch: number; spd: number; phase: number; f: number; attackAt: number; abilityAt: Partial<Record<AbilityId, number>> }) {
+  private entityPose(rm: { x: number; z: number; yaw: number; pitch: number; spd: number; phase: number; f: number; attackAt: number; abilityAt: Partial<Record<AbilityId, number>>; hitAt?: number; deathAt?: number }) {
     const since = (t?: number) => (t === undefined ? 99 : this.time - t);
-    const atk = since(rm.attackAt);
+    const sp = since(rm.abilityAt.golpe);
+    const special = sp < ENT.specialWindup ? sp / ENT.specialWindup : sp < ENT.specialWindup + 0.3 ? 1 + (sp - ENT.specialWindup) / 0.3 : 0;
+    const atk = special > 0 ? 99 : since(rm.attackAt);
     return {
       x: rm.x,
       z: rm.z,
@@ -952,6 +1057,9 @@ export class GameClient {
       eco: Math.max(0, 1 - since(rm.abilityAt.eco) / 1.5),
       rastro: since(rm.abilityAt.rastro) < ABILITIES.rastro.duration,
       parasite: Math.max(0, 1 - since(rm.abilityAt.parasita) / 2),
+      special,
+      hit: Math.max(0, 1 - since(rm.hitAt) / 0.35),
+      death: rm.deathAt !== undefined && rm.deathAt > 0 ? Math.min(1, since(rm.deathAt) / 1.2) : 0,
     };
   }
 
@@ -963,9 +1071,9 @@ export class GameClient {
     this.myPhase += this.pred.speed * 0.016 * (this.role === 'entity' ? 2.4 : 3.6);
     if (this.role === 'survivor') {
       const mf = this.myFlags();
-      drawSurvivor(this.renderer, this.myAp, { x, z, yaw: this.yaw, pitch: this.pitch, speed: this.pred.speed, phase: this.myPhase, crouch: this.pred.crouch, downed: you.st === 'downed', channel: !!you.ch, flash: you.flash, time: this.time, weapon: you.wpn?.sel, firing: !!(mf & PF.FIRE), reloading: (you.wpn?.reload ?? 0) > 0, collecting: !!(mf & PF.COLLECT) }, { alpha: 1, emit: [0, 0, 0] });
+      drawSurvivor(this.renderer, this.myAp, { x, z, yaw: this.yaw, pitch: this.pitch, speed: this.pred.speed, phase: this.myPhase, crouch: this.pred.crouch, downed: you.st === 'downed', channel: !!you.ch, flash: you.flash, time: this.time, weapon: you.wpn?.sel, firing: !!(mf & PF.FIRE), reloading: (you.wpn?.reload ?? 0) > 0, collecting: !!(mf & PF.COLLECT), hit: Math.max(0, 1 - (this.time - this.myHitAt) / 0.35) }, { alpha: 1, emit: [0, 0, 0] });
     } else {
-      const pose = this.entityPose({ x, z, yaw: this.yaw, pitch: this.pitch, spd: this.pred.speed, phase: this.myPhase, f: (this.pred.crouch ? PF.CROUCH : 0) | ((you.act?.ruptura ?? 0) > 0 ? PF.DASH : 0), attackAt: this.myAttackAt, abilityAt: this.myAbilityAt });
+      const pose = this.entityPose({ x, z, yaw: this.yaw, pitch: this.pitch, spd: this.pred.speed, phase: this.myPhase, f: (this.pred.crouch ? PF.CROUCH : 0) | ((you.act?.ruptura ?? 0) > 0 ? PF.DASH : 0), attackAt: this.myAttackAt, abilityAt: this.myAbilityAt, hitAt: this.myHitAt, deathAt: this.myDeathAt });
       if (you.camo) {
         this.renderer.transparent(true);
         drawEntity(this.renderer, this.myAp.entBody, this.myAp.entGlow, pose, { alpha: 0.3, emit: [0, 0, 0] });
@@ -1324,7 +1432,8 @@ export class GameClient {
       for (const [, kind, sx, sz, claimed] of snap.sup) cands.push({ x: sx, z: sz, prio: 0.7, text: claimed ? 'Alguém já está coletando' : this.supplyPrompt(kind) });
       for (const rm of this.remotes.values()) if (rm.visible && rm.role === 'survivor' && rm.f & PF.DOWNED) cands.push({ x: rm.x, z: rm.z, prio: 1.2, text: `Resgatar ${rm.name} (segure)` });
       const locked = new Set(snap.locked);
-      for (const d of this.map.doors) if (!d.secure) cands.push({ x: d.x, z: d.z, half: 1, prio: 0, text: locked.has(d.idx) ? 'Porta travada (interferência)' : this.grid.doorOpen[d.idx] ? 'Fechar porta' : 'Abrir porta' });
+      // portas abrem sozinhas para humanos; só avisamos quando estão travadas
+      for (const d of this.map.doors) if (!d.secure && locked.has(d.idx)) cands.push({ x: d.x, z: d.z, half: 1, prio: 0, text: 'Porta travada (interferência)' });
       for (const l of this.map.lockers) cands.push({ x: l.x, z: l.z, half: 1, prio: 0.1, text: 'Esconder-se no armário' });
       for (const t of snap.tasks) {
         if (!t.active) continue;
@@ -1367,10 +1476,13 @@ export class GameClient {
     const you = snap.you;
     const survivors = this.intro.players.filter((p) => p.role === 'survivor');
     this.hud.set({
+      mapToggle: this.minimapToggle,
+      aimLock: this.aimEngaged,
       role: this.role,
       status: you.st,
       hp: you.hp,
       stamina: this.pred.stamina,
+      staminaMax: this.intro.mods?.staminaMax ?? SURV.staminaMax,
       exhausted: this.pred.exhausted,
       inv: you.inv,
       wpn: you.wpn ?? null,

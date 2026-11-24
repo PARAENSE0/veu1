@@ -88,10 +88,10 @@ export const COSMETICS: Cosmetic[] = [
   { id: 'uni_resgate', slot: 'uniforme', name: 'Equipe de resgate', unlock: { type: 'achievement', id: 'anjo_da_guarda' }, data: { torso: c(230, 90, 30), legs: c(230, 90, 30), shoeColor: c(50, 50, 50), boots: true, stripe: c(240, 240, 240) } },
   { id: 'uni_quarentena', slot: 'uniforme', name: 'Traje de quarentena', unlock: { type: 'shop', price: 500 }, data: { torso: c(210, 210, 90), legs: c(210, 210, 90), shoeColor: c(60, 60, 60), boots: true, stripe: c(30, 30, 30) } },
   // Entidade
-  { id: 'ent_padrao', slot: 'entidade', name: 'Reverberante — Abissal', unlock: { type: 'default' }, data: { body: c(36, 34, 44), glow: c(255, 60, 40) } },
-  { id: 'ent_palido', slot: 'entidade', name: 'Reverberante — Pálido', unlock: { type: 'mastery', level: 3 }, data: { body: c(150, 150, 160), glow: c(120, 220, 255) } },
-  { id: 'ent_coral', slot: 'entidade', name: 'Reverberante — Coral', unlock: { type: 'mastery', level: 6 }, data: { body: c(90, 40, 50), glow: c(255, 170, 60) } },
-  { id: 'ent_vazio', slot: 'entidade', name: 'Reverberante — Vazio', unlock: { type: 'shop', price: 600 }, data: { body: c(20, 20, 24), glow: c(170, 80, 255) } },
+  { id: 'ent_padrao', slot: 'entidade', name: 'Reverberante — Abissal', unlock: { type: 'default' }, data: { body: c(235, 228, 236), glow: c(255, 60, 40) } },
+  { id: 'ent_palido', slot: 'entidade', name: 'Reverberante — Pálido', unlock: { type: 'mastery', level: 3 }, data: { body: c(200, 215, 240), glow: c(120, 220, 255) } },
+  { id: 'ent_coral', slot: 'entidade', name: 'Reverberante — Coral', unlock: { type: 'mastery', level: 6 }, data: { body: c(240, 175, 165), glow: c(255, 170, 60) } },
+  { id: 'ent_vazio', slot: 'entidade', name: 'Reverberante — Vazio', unlock: { type: 'shop', price: 600 }, data: { body: c(120, 118, 130), glow: c(170, 80, 255) } },
 ];
 
 export const COSMETIC_BY_ID: Record<string, Cosmetic> = Object.fromEntries(COSMETICS.map((x) => [x.id, x]));
@@ -151,23 +151,32 @@ export function resolveAppearance(l: Partial<Loadout>): Appearance {
     acc: acc.acc ?? 'nenhum',
     accColor: acc.accColor ?? [0.5, 0.5, 0.5],
     stripe: hasUni ? (uni.stripe ?? null) : null,
-    entBody: ent.body ?? [0.14, 0.13, 0.17],
+    entBody: ent.body ?? [0.92, 0.89, 0.93],
     entGlow: ent.glow ?? [1, 0.24, 0.16],
   };
 }
 
-// ---- Níveis ----
+// ---- Níveis (máximo 50) ----
+export const MAX_LEVEL = 50;
+/** XP necessário para sair de `level` e chegar ao próximo (curva progressiva). */
 export function xpToNext(level: number): number {
   return 200 + (level - 1) * 75;
 }
-export function levelFromXp(totalXp: number): { level: number; into: number; need: number } {
+/** XP total para atingir o nível máximo. */
+export const XP_FOR_MAX = (() => {
+  let t = 0;
+  for (let l = 1; l < MAX_LEVEL; l++) t += xpToNext(l);
+  return t;
+})();
+export function levelFromXp(totalXp: number): { level: number; into: number; need: number; max: boolean } {
   let level = 1;
-  let rest = totalXp;
-  while (rest >= xpToNext(level) && level < 100) {
+  let rest = Math.max(0, totalXp);
+  while (level < MAX_LEVEL && rest >= xpToNext(level)) {
     rest -= xpToNext(level);
     level++;
   }
-  return { level, into: rest, need: xpToNext(level) };
+  if (level >= MAX_LEVEL) return { level: MAX_LEVEL, into: 0, need: 0, max: true };
+  return { level, into: rest, need: xpToNext(level), max: false };
 }
 export function masteryFromXp(xp: number) {
   // maestria da entidade: 400 xp por nível

@@ -27,8 +27,8 @@ function Row(p: { label: string; desc?: string; children: ReactNode }) {
   );
 }
 
-const SURV_ACTIONS: Action[] = ['frente', 'tras', 'esquerda', 'direita', 'correr', 'agachar', 'interagir', 'lanterna', 'inventario', 'item1', 'item2', 'item3', 'item4', 'atirar', 'trocarArma', 'recarregar', 'camera', 'falar'];
-const ENT_ACTIONS: Action[] = ['rastro', 'eco', 'ruptura', 'parasita', 'ecoProximo'];
+const SURV_ACTIONS: Action[] = ['frente', 'tras', 'esquerda', 'direita', 'correr', 'agachar', 'interagir', 'lanterna', 'inventario', 'item1', 'item2', 'item3', 'item4', 'atirar', 'trocarArma', 'recarregar', 'mira', 'mapa', 'camera', 'falar'];
+const ENT_ACTIONS: Action[] = ['golpe', 'rastro', 'eco', 'ruptura', 'parasita', 'ecoProximo'];
 
 export function SettingsPanel(p: { compact?: boolean }) {
   const s = useSettings();
@@ -162,6 +162,19 @@ export function SettingsPanel(p: { compact?: boolean }) {
           </Row>
           <Row label="Inverter eixo vertical">
             <Toggle value={s.invertY} onChange={(v) => updateSettings({ invertY: v })} />
+          </Row>
+          <Row label="Assistência de mira" desc="Ajuda a acompanhar a entidade quando ela está visível e no alcance. Nunca atira sozinha. Automático: forte no toque, média no mouse.">
+            <Select
+              value={s.aimAssist}
+              onChange={(v) => updateSettings({ aimAssist: v })}
+              options={[
+                ['auto', 'Automático'],
+                ['forte', 'Forte'],
+                ['media', 'Média'],
+                ['leve', 'Leve'],
+                ['desligada', 'Desligada'],
+              ]}
+            />
           </Row>
           <Row label="Controles de toque" desc="Automático detecta telas sensíveis ao toque.">
             <Select

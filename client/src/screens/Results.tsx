@@ -47,7 +47,7 @@ export function ResultsScreen() {
                   .map((p) => (
                     <tr key={p.id} style={{ background: p.id === profile.id ? 'rgba(95,225,214,0.06)' : undefined }}>
                       <td>
-                        <b>{p.name}</b> {p.role === 'entity' && <span className="tag danger">entidade</span>}
+                        <b>{p.name}</b> {p.role === 'entity' && <span className="tag danger">entidade</span>} {p.mvp && <span className="tag accent">MVP</span>}
                       </td>
                       <td>
                         <span className={`tag ${OUT[p.outcome][1]}`}>{OUT[p.outcome][0]}</span>
@@ -74,6 +74,17 @@ export function ResultsScreen() {
                     <span>fragmentos ◈</span>
                   </div>
                 </div>
+                {me?.xpParts && me.xpParts.length > 0 && (
+                  <div className="col" style={{ gap: 2, marginTop: 8, fontSize: 12 }}>
+                    {me.xpParts.map((x) => (
+                      <div key={x.label} className="row">
+                        <span className="grow muted">{x.label}</span>
+                        <span className="mono">+{x.xp} XP</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {rw.xp < (me?.xp ?? 0) && profile.maxLevel && <div className="muted" style={{ marginTop: 6, fontSize: 12 }}>Nível máximo (50): o XP não acumula mais, mas os fragmentos sim.</div>}
                 {rw.levelAfter > rw.levelBefore && (
                   <div className="tag good" style={{ marginTop: 10, fontSize: 13 }}>
                     Subiu para o nível {rw.levelAfter}! (+{(rw.levelAfter - rw.levelBefore) * 50} ◈)

@@ -73,7 +73,7 @@ export function CustomizeScreen() {
       <div style={{ position: 'relative' }}>
         <TopBar
           title="Personalização"
-          back={getState().room ? 'lobby' : 'menu'}
+          back={getState().room ? 'lobby' : 'profile'}
           right={
             <div className="row">
               <Button disabled={!dirty} onClick={() => setDraft({ ...profile.loadout })}>
@@ -139,7 +139,7 @@ export function ShopScreen() {
     <div className="screen">
       <Backdrop />
       <div style={{ position: 'relative' }}>
-        <TopBar title="Loja de cosméticos" back="menu" right={<span className="tag accent" style={{ fontSize: 13 }}>{profile.coins} ◈ fragmentos</span>} />
+        <TopBar title="Loja de cosméticos" back="profile" right={<span className="tag accent" style={{ fontSize: 13 }}>{profile.coins} ◈ fragmentos</span>} />
         <p className="muted" style={{ marginTop: 0 }}>
           Fragmentos (◈) são ganhos jogando partidas, subindo de nível, em conquistas e na temporada. Esta versão não tem pagamentos com dinheiro real.
         </p>
@@ -184,7 +184,7 @@ export function CollectionScreen() {
     <div className="screen">
       <Backdrop />
       <div style={{ position: 'relative' }}>
-        <TopBar title="Inventário" back="menu" right={<Button onClick={() => go('customize')}>Personalizar</Button>} />
+        <TopBar title="Inventário" back="profile" right={<Button onClick={() => go('customize')}>Personalizar</Button>} />
         <p className="muted" style={{ marginTop: 0 }}>
           {owned.size} de {COSMETICS.length} itens desbloqueados.
         </p>
@@ -248,10 +248,8 @@ export function StatsScreen() {
               </div>
             </div>
             <div style={{ marginTop: 10 }}>
-              <div className="label">
-                Experiência {profile.levelInto}/{profile.levelNeed}
-              </div>
-              <Bar value={profile.levelInto / profile.levelNeed} />
+              <div className="label">{profile.maxLevel ? 'Nível máximo atingido' : `Experiência ${profile.levelInto}/${profile.levelNeed}`}</div>
+              <Bar value={profile.maxLevel ? 1 : profile.levelInto / Math.max(1, profile.levelNeed)} />
             </div>
             <div style={{ marginTop: 14 }}>
               <div className="label">Maestria — O Reverberante: nível {mastery.level}</div>
@@ -332,7 +330,7 @@ export function HistoryScreen() {
     <div className="screen">
       <Backdrop />
       <div style={{ position: 'relative' }}>
-        <TopBar title="Histórico de partidas" back="menu" />
+        <TopBar title="Histórico de partidas" back="profile" />
         <div className="panel">
           {err && <div className="error-text">{err}</div>}
           {!list && !err && <div className="spinner" />}

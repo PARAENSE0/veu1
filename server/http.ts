@@ -6,7 +6,9 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, normalize, sep } from 'node:path';
 import { z } from 'zod';
+import { timingSafeEqual } from 'node:crypto';
 import { AuthError, type Accounts } from './accounts';
+import type { FriendInfo, FriendStatus } from '../shared/protocol';
 import type { RoomManager } from './rooms';
 
 const MIME: Record<string, string> = {
@@ -58,6 +60,10 @@ const credentials = z.object({ username: z.string().max(32), password: z.string(
 const guestBody = z.object({ name: z.string().max(32).optional() });
 const loadoutBody = z.object({ loadout: z.record(z.string().max(32), z.string().max(48)) });
 const buyBody = z.object({ id: z.string().max(48) });
+const idBody = z.object({ id: z.string().min(1).max(64) });
+const codeBody = z.object({ code: z.string().max(40) });
+const adminCodeBody = z.object({ code: z.string().max(40), coins: z.number().int().min(0).max(1_000_000).optional(), xp: z.number().int().min(0).max(10_000_000).optional(), maxLevel: z.boolean().optional(), maxUses: z.number().int().min(1).nullable().optional(), expires: z.string().max(40).nullable().optional() });
+const codeLimiter = new RateLimiter(10, 60_000);
 
 export function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
@@ -102,8 +108,24 @@ function bearer(req: IncomingMessage): string {
   return h.startsWith('Bearer ') ? h.slice(7) : '';
 }
 
-export function makeHttpHandler(opts: { accounts: Accounts; rooms: RoomManager; publicDir: string; trustProxy: boolean; iceServers: unknown[]; allowedOrigins?: string[]; assetLinks?: string }) {
+export function makeHttpHandler(opts: { accounts: Accounts; rooms: RoomManager; publicDir: string; trustProxy: boolean; iceServers: unknown[]; allowedOrigins?: string[]; assetLinks?: string; adminToken?: string }) {
   const { accounts, rooms, publicDir } = opts;
+
+  /** Lista de amigos com presença (online, no lobby, em partida) e solicitações. */
+  async function friendsView(user: Awaited<ReturnType<Accounts['fromToken']>> & object) {
+    const status = (id: string): { status: FriendStatus; roomCode?: string } => {
+      if (!rooms.conns.has(id)) return { status: 'offline' };
+      const room = rooms.roomOf(id);
+      if (!room) return { status: 'menu' };
+      if (room.state === 'lobby' || room.state === 'countdown') return { status: 'lobby', roomCode: room.isPublic ? room.code : undefined };
+      return { status: 'partida' };
+    };
+    const brief = async (ids: string[]) => (await Promise.all(ids.map((i) => accounts.userBrief(i)))).filter((x): x is NonNullable<typeof x> => !!x);
+    const friends: FriendInfo[] = (await brief(user.friends)).map((f) => ({ ...f, ...status(f.id) }));
+    const order: Record<FriendStatus, number> = { partida: 0, lobby: 1, menu: 2, offline: 3 };
+    friends.sort((a, b) => order[a.status] - order[b.status] || a.username.localeCompare(b.username));
+    return { friends, incoming: await brief(user.friendIn), outgoing: await brief(user.friendOut) };
+  }
 
   async function api(req: IncomingMessage, res: ServerResponse, path: string) {
     const ip = clientIp(req, opts.trustProxy);
@@ -124,6 +146,21 @@ export function makeHttpHandler(opts: { accounts: Accounts; rooms: RoomManager; 
         return send(res, 200, { token: r.token, profile: accounts.profile(r.user) });
       }
       if (path === '/api/config') return send(res, 200, { iceServers: opts.iceServers });
+      if (method === 'GET' && path === '/api/ranking') {
+        const by = new URL(req.url ?? '', 'http://x').searchParams.get('by') === 'vitorias' ? 'vitorias' : 'xp';
+        const viewer = await accounts.fromToken(bearer(req));
+        return send(res, 200, await accounts.ranking(by, viewer && !viewer.guest ? viewer : null));
+      }
+      // administração de códigos de presente (exige ADMIN_TOKEN no servidor)
+      if (path === '/api/admin/codes') {
+        const tok = String(req.headers['x-admin-token'] ?? '');
+        if (!opts.adminToken || tok.length !== opts.adminToken.length || !timingSafeEqual(Buffer.from(tok), Buffer.from(opts.adminToken))) return send(res, 403, { error: 'forbidden', msg: 'Acesso negado.' });
+        if (method === 'GET') return send(res, 200, { codes: await accounts.listCodes() });
+        if (method === 'POST') {
+          const b = adminCodeBody.parse(await readJson(req));
+          return send(res, 200, { code: await accounts.createCode(b) });
+        }
+      }
       if (path === '/api/health') return send(res, 200, { ok: true, rooms: rooms.rooms.size, players: rooms.conns.size });
 
       // rotas autenticadas
@@ -153,6 +190,55 @@ export function makeHttpHandler(opts: { accounts: Accounts; rooms: RoomManager; 
         return send(res, 200, { profile: accounts.profile(user) });
       }
       if (method === 'GET' && path === '/api/history') return send(res, 200, { history: user.history });
+      if (method === 'POST' && path === '/api/upgrades/buy') {
+        const b = buyBody.parse(await readJson(req));
+        await accounts.buyUpgrade(user, b.id);
+        const m = rooms.roomOf(user.id)?.members.get(user.id);
+        if (m) m.upgrades = { ...user.upgrades };
+        return send(res, 200, { profile: accounts.profile(user) });
+      }
+      if (method === 'POST' && path === '/api/codes/redeem') {
+        if (!codeLimiter.allow(user.id)) return send(res, 429, { error: 'rate_limited', msg: 'Muitas tentativas. Aguarde um minuto.' });
+        const b = codeBody.parse(await readJson(req));
+        const r = await accounts.redeemCode(user, b.code);
+        const room = rooms.roomOf(user.id);
+        const m = room?.members.get(user.id);
+        if (room && m) {
+          m.level = r.levelAfter;
+          room.broadcastState();
+        }
+        return send(res, 200, { reward: r, profile: accounts.profile(user) });
+      }
+      if (method === 'GET' && path === '/api/users/search') {
+        const q = new URL(req.url ?? '', 'http://x').searchParams.get('q') ?? '';
+        return send(res, 200, { users: await accounts.search(q, user) });
+      }
+      if (method === 'GET' && path === '/api/friends') return send(res, 200, await friendsView(user));
+      if (method === 'POST' && path.startsWith('/api/friends/')) {
+        const action = path.slice('/api/friends/'.length);
+        const { id } = idBody.parse(await readJson(req));
+        const me = { id: user.id, username: user.username };
+        if (action === 'request') {
+          const r = await accounts.friendRequest(user, id);
+          rooms.sendTo(r.other.id, { t: 'notice', n: { kind: r.result === 'accepted' ? 'friend_accept' : 'friend_request', from: me } });
+          return send(res, 200, { result: r.result, ...(await friendsView(user)) });
+        }
+        if (action === 'accept') {
+          const o = await accounts.friendAccept(user, id);
+          rooms.sendTo(o.id, { t: 'notice', n: { kind: 'friend_accept', from: me } });
+        } else if (action === 'reject') await accounts.friendReject(user, id);
+        else if (action === 'cancel') await accounts.friendCancel(user, id);
+        else if (action === 'remove') await accounts.friendRemove(user, id);
+        else if (action === 'invite') {
+          if (!user.friends.includes(id)) throw new AuthError('not_friend', 'Só é possível convidar amigos.');
+          const room = rooms.roomOf(user.id);
+          if (!room || (room.state !== 'lobby' && room.state !== 'countdown')) throw new AuthError('no_room', 'Entre em uma sala (lobby) antes de convidar.');
+          if (!rooms.conns.has(id)) throw new AuthError('offline', 'Seu amigo está offline.');
+          rooms.sendTo(id, { t: 'notice', n: { kind: 'invite', from: me, code: room.code, roomName: room.name } });
+          return send(res, 200, { ok: true });
+        } else return send(res, 404, { error: 'not_found', msg: 'Ação inexistente.' });
+        return send(res, 200, await friendsView(user));
+      }
       return send(res, 404, { error: 'not_found', msg: 'Rota inexistente.' });
     } catch (err) {
       if (err instanceof AuthError) return send(res, 400, { error: err.code, msg: err.message });

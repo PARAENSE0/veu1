@@ -1,9 +1,9 @@
 /** Estado global da aplicação (fora do jogo 3D), com assinatura para o React. */
 import { useSyncExternalStore } from 'react';
-import type { MatchIntro, MatchResults, Profile, RoomInfo, RoomListEntry } from '../../shared/protocol';
+import type { MatchIntro, MatchResults, Notice, Profile, RoomInfo, RoomListEntry } from '../../shared/protocol';
 import type { NetStatus } from './net';
 
-export type Screen = 'title' | 'auth' | 'menu' | 'play' | 'lobby' | 'customize' | 'shop' | 'collection' | 'settings' | 'stats' | 'history' | 'match' | 'results';
+export type Screen = 'title' | 'auth' | 'menu' | 'play' | 'lobby' | 'customize' | 'shop' | 'collection' | 'settings' | 'stats' | 'history' | 'match' | 'results' | 'profile' | 'ranking' | 'friends' | 'upgrades' | 'gift';
 
 export interface Toast {
   id: number;
@@ -23,6 +23,10 @@ export interface AppState {
   results: MatchResults | null;
   net: NetStatus;
   toasts: Toast[];
+  /** notificações sociais recebidas nesta sessão */
+  notices: Notice[];
+  /** convite pendente para uma sala */
+  invite: Notice | null;
 }
 
 let state: AppState = {
@@ -37,6 +41,8 @@ let state: AppState = {
   results: null,
   net: 'offline',
   toasts: [],
+  notices: [],
+  invite: null,
 };
 
 const listeners = new Set<() => void>();

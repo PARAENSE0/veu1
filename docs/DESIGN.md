@@ -149,3 +149,35 @@ XP por partida (50 de participação + pontuação/5 + 100 pela vitória), fragm
 ## 8. Áudio [implementado]
 
 Todo o áudio é sintetizado em tempo real (Web Audio): passos por superfície e estado, portas metálicas, rádio com fala ininteligível, alarmes, gritos, impactos, rangidos do casco, cantos distantes do oceano, zumbido de pressão, rosnado posicional da entidade, batimentos cardíacos e música de perseguição que crescem com a proximidade, estrondo de susto. Som 3D binaural (HRTF) e reverberação de casco metálico (qualidade alta), estéreo simples (qualidade baixa). A posição exata da entidade nunca é enviada sem linha de visão: o batimento usa só um nível de "ameaça".
+
+## 9. Atualização v0.2 — progressão, social e combate [implementado]
+
+### 9.1 Combate (servidor decide tudo)
+| Ataque | Dano (vida humana = 100) | Observações |
+|---|---|---|
+| Golpe comum (botão esquerdo) | **18** (18%) | preparação 0,35 s; recarga 1,25 s ao acertar; um único alvo por golpe; exige linha de visão e alcance 2,4 m |
+| Golpe Brutal (botão direito) | **34** (34%) | preparação 0,8 s (a entidade fica lenta); alcance 2,9 m; recarga 12 s |
+| Poder de ataque no máximo | ×1,15 | 2 golpes comuns = 41,4 → **nunca derruba com dois golpes comuns** |
+| Resistência física no máximo | ×0,85 | |
+
+São necessários pelo menos **5 golpes comuns** (6 com o caído) para eliminar um sobrevivente sem melhorias de resistência. A adrenalina após um golpe foi reduzida (1,4 s, +20%) para não tornar fugas impossíveis de punir.
+
+### 9.2 Melhorias permanentes (5 níveis; custos 300/700/1.200/2.000/3.000 fragmentos)
+Humanos: estamina máxima (+5%/nível), recuperação de estamina (+10%), velocidade (+1%), resistência física (−3% de dano), velocidade de interação (+6%).
+Monstro: velocidade (+1%), resistência (−3% do dano de armas), poder de ataque (+3%), recuperação de habilidades (−4% de recarga), eficiência das habilidades (+6% de duração).
+Os valores máximos foram limitados para não quebrar o equilíbrio (ex.: velocidade no máximo = +5%).
+
+### 9.3 Estamina
+Gasta 21/s correndo; recupera 15/s depois de 1 s sem correr, **×1,6 parado** (e mais com a melhoria de recuperação); esgotada, bloqueia a corrida até 30% (aviso "EXAUSTO"); aviso "fôlego baixo" abaixo de 25%. A predição do cliente usa as mesmas regras (com as melhorias) para não haver correção visível.
+
+### 9.4 Portas automáticas
+Para humanos, portas comuns abrem quando alguém chega a 0,9 m do vão e fecham 1,5 s depois que todos se afastam — nunca com alguém no vão. A entidade não aciona o sensor (abre manualmente), portas de segurança seguem os objetivos e portas travadas pelo Parasita continuam travadas.
+
+### 9.5 Iluminação
+Toda célula andável (cômodos, corredores e vãos de porta) precisa receber luz mínima com linha de visão, com energia ligada (luzes da área) e desligada (emergência vermelha). Onde falta, o mapa ganha luzes de preenchimento mais fracas — o clima escuro se mantém. O renderizador usa as 16 luzes mais próximas por quadro.
+
+### 9.6 Minimapa e mira
+O minimapa mostra a planta real, portas, a própria posição/direção, companheiros que você já está vendo e os objetivos ativos — nunca a entidade (nem os sobreviventes no minimapa da entidade). A assistência de mira só atua com a entidade visível, sem camuflagem, dentro do alcance da arma, sem parede no caminho e dentro de um cone pequeno; não dispara sozinha. Automático: forte no toque, média no mouse.
+
+### 9.7 Visual da entidade (imagem de referência)
+Criatura alta (≈2,6 m) e muito magra, pele pálida com veias arroxeadas e escorridos de sangue, cabeça redonda e lisa com um sorriso largo de dentes, coroa de espinhos ósseos (marfim → vermelho na ponta), espinhos nos ombros e ao longo da coluna, braços longos com dedos em garra e pés de garras. Mantém todas as habilidades do Reverberante.

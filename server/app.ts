@@ -27,6 +27,8 @@ export interface AppOptions {
   iceServers?: unknown[];
   /** conteúdo de /.well-known/assetlinks.json (app Android) */
   assetLinks?: string;
+  /** token para administrar códigos de presente (POST /api/admin/codes) */
+  adminToken?: string;
 }
 
 export interface App {
@@ -41,8 +43,9 @@ export async function createApp(o: AppOptions): Promise<App> {
   const store = new FileStore(o.dataFile);
   await store.init();
   const accounts = new Accounts(store);
+  await accounts.seedCodes();
   const rooms = new RoomManager(accounts, store, { matchDuration: o.matchDuration, countdown: o.countdown, supplyRespawn: o.supplyRespawn });
-  const server = createServer(makeHttpHandler({ accounts, rooms, publicDir: o.publicDir, trustProxy: !!o.trustProxy, allowedOrigins: o.allowedOrigins, assetLinks: o.assetLinks, iceServers: o.iceServers ?? [{ urls: 'stun:stun.l.google.com:19302' }] }));
+  const server = createServer(makeHttpHandler({ accounts, rooms, publicDir: o.publicDir, trustProxy: !!o.trustProxy, allowedOrigins: o.allowedOrigins, assetLinks: o.assetLinks, adminToken: o.adminToken, iceServers: o.iceServers ?? [{ urls: 'stun:stun.l.google.com:19302' }] }));
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
   const log = (...a: unknown[]) => o.log !== false && console.log(...a);
 
@@ -92,6 +95,7 @@ export async function createApp(o: AppOptions): Promise<App> {
           clearTimeout(authTimer);
           conn = { userId: u.id, send, close: (c, r) => ws.close(c, r) };
           rooms.attach(conn, u);
+          void accounts.touch(u).catch(() => {});
           return;
         }
         handle(user, msg);
@@ -104,6 +108,7 @@ export async function createApp(o: AppOptions): Promise<App> {
     ws.on('close', () => {
       clearTimeout(authTimer);
       if (conn) rooms.detach(conn);
+      if (user) void accounts.touch(user).catch(() => {});
     });
 
     function handle(u: UserRecord, msg: NonNullable<ReturnType<typeof parseClientMsg>>) {

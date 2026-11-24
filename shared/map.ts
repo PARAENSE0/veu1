@@ -96,6 +96,8 @@ export interface LightDef {
   color: [number, number, number];
   radius: number;
   emergency: boolean;
+  /** luz de preenchimento adicionada pela verificação de cobertura */
+  fill?: boolean;
 }
 
 export interface Rect {
@@ -336,14 +338,62 @@ export class MapBuilder {
         const t = (k + 0.5) / n;
         const ex = wC >= hC ? Math.floor(zn.x0 + t * wC) : Math.floor((zn.x0 + zn.x1) / 2);
         const ez = wC >= hC ? Math.floor((zn.z0 + zn.z1) / 2) : Math.floor(zn.z0 + t * hC);
-        this.lights.push({ x: cc(ex), y: WALL_H - 0.4, z: cc(ez), zone: zn.id, color: [1, 0.14, 0.09], radius: 12, emergency: true });
+        // nunca dentro de parede/máquina: usa a célula livre mais próxima
+        const fi = this.get(ex, ez) === T.FLOOR ? ez * this.w + ex : nearestFloor(this.w, this.h, this.cells, ez * this.w + ex);
+        if (fi < 0) continue;
+        this.lights.push({ x: cc(fi % this.w), y: WALL_H - 0.4, z: cc(Math.floor(fi / this.w)), zone: zn.id, color: [1, 0.14, 0.09], radius: 12, emergency: true });
       }
     }
     for (const l of this.extraLights) {
       const zn = this.zones.find((z) => z.id === l.zone)!;
       this.lights.push({ x: cc(l.cx), y: WALL_H - 0.3, z: cc(l.cz), zone: l.zone, color: THEME_LIGHT[zn.theme], radius: 9, emergency: false });
     }
-
+    // cobertura: todo cômodo, corredor e vão de porta precisa de luz funcional
+    // nos dois estados de energia (normal e emergência). Onde faltar, entra
+    // uma luz de preenchimento mais fraca (mantém o clima escuro).
+    for (const emergency of [false, true]) {
+      const cov = lightCoverage(this.w, this.h, this.cells, this.lights, emergency);
+      const need = emergency ? COVER_MIN_EMERGENCY : COVER_MIN_NORMAL;
+      const isDark = (i: number) => cov[i] >= 0 && cov[i] < need;
+      for (let guard = 0; guard < 400; guard++) {
+        let best = -1;
+        let bestGain = 0;
+        let anyDark = -1;
+        for (let i = 0; i < cov.length; i++) {
+          if (!isDark(i)) continue;
+          if (anyDark < 0) anyDark = i;
+          if (this.cells[i] !== T.FLOOR) continue;
+          const cx = i % this.w;
+          const cz = Math.floor(i / this.w);
+          let gain = 0;
+          for (let dz = -3; dz <= 3; dz++)
+            for (let dx = -3; dx <= 3; dx++) {
+              const x = cx + dx;
+              const z = cz + dz;
+              if (x < 0 || z < 0 || x >= this.w || z >= this.h || !isDark(z * this.w + x)) continue;
+              if (cellLos(this.w, this.h, this.cells, cc(cx), cc(cz), cc(x), cc(z))) gain++;
+            }
+          if (gain > bestGain) {
+            bestGain = gain;
+            best = i;
+          }
+        }
+        if (anyDark < 0) break;
+        if (best < 0) best = nearestFloor(this.w, this.h, this.cells, anyDark);
+        if (best < 0) break;
+        const cx = best % this.w;
+        const cz = Math.floor(best / this.w);
+        const zone = this.zoneAt(cx, cz);
+        const zn = this.zones.find((z) => z.id === zone);
+        const base = zn ? THEME_LIGHT[zn.theme] : ([0.8, 0.85, 1] as [number, number, number]);
+        const L: LightDef = emergency
+          ? { x: cc(cx), y: WALL_H - 0.4, z: cc(cz), zone, color: [0.85, 0.12, 0.08], radius: 9, emergency: true, fill: true }
+          : { x: cc(cx), y: WALL_H - 0.3, z: cc(cz), zone, color: [base[0] * 0.75, base[1] * 0.75, base[2] * 0.75], radius: 8, emergency: false, fill: true };
+        this.lights.push(L);
+        const add = lightCoverage(this.w, this.h, this.cells, [L], emergency);
+        for (let i = 0; i < cov.length; i++) if (cov[i] >= 0) cov[i] += add[i];
+      }
+    }
     const def: MapDef = {
       id: this.id,
       name: this.name,
@@ -541,6 +591,72 @@ export const MAPS: Record<string, () => MapDef> = {
 };
 
 export const MAP_LIST = [{ id: 'abissal', name: 'Complexo Abissal', desc: 'Instalação científica submarina a 2.400 m de profundidade.' }];
+
+// ------------------------------------------------------------------ cobertura de luz
+/** Luz mínima (luminância no piso) para considerar a célula iluminada. */
+export const COVER_MIN_NORMAL = 0.16;
+export const COVER_MIN_EMERGENCY = 0.07;
+
+/** Linha de visão entre dois pontos (m) considerando paredes, máquinas, armários e portas fechadas. */
+export function cellLos(w: number, h: number, cells: Uint8Array | number[], x0: number, z0: number, x1: number, z1: number): boolean {
+  const d = Math.hypot(x1 - x0, z1 - z0);
+  const n = Math.ceil(d / 0.25);
+  const c0 = Math.floor(x0 / CELL) + Math.floor(z0 / CELL) * w;
+  const c1 = Math.floor(x1 / CELL) + Math.floor(z1 / CELL) * w;
+  for (let k = 1; k < n; k++) {
+    const x = x0 + ((x1 - x0) * k) / n;
+    const z = z0 + ((z1 - z0) * k) / n;
+    const cx = Math.floor(x / CELL);
+    const cz = Math.floor(z / CELL);
+    if (cx < 0 || cz < 0 || cx >= w || cz >= h) return false;
+    const i = cz * w + cx;
+    if (i === c0 || i === c1) continue;
+    const t = cells[i];
+    if (t === T.WALL || t === T.MACHINE || t === T.LOCKER || t === T.DOOR || t === T.SECDOOR) return false;
+  }
+  return true;
+}
+
+/**
+ * Luminância que chega ao centro de cada célula andável (mesma atenuação do
+ * shader: (1 - d/r)²), só de luzes com linha de visão. -1 = célula não andável.
+ * emergency=false: energia ligada; true: energia desligada (só luzes vermelhas).
+ */
+export function lightCoverage(w: number, h: number, cells: Uint8Array | number[], lights: LightDef[], emergency: boolean): Float32Array {
+  const out = new Float32Array(w * h).fill(-1);
+  const ls = lights.filter((l) => l.emergency === emergency);
+  for (let cz = 0; cz < h; cz++)
+    for (let cx = 0; cx < w; cx++) {
+      const i = cz * w + cx;
+      const t = cells[i];
+      if (t !== T.FLOOR && t !== T.DOOR && t !== T.SECDOOR) continue;
+      const px = cc(cx);
+      const pz = cc(cz);
+      let sum = 0;
+      for (const l of ls) {
+        const d = Math.hypot(l.x - px, l.y, l.z - pz);
+        if (d >= l.radius) continue;
+        if (Math.hypot(l.x - px, l.z - pz) > 1 && !cellLos(w, h, cells, l.x, l.z, px, pz)) continue;
+        const a = 1 - d / l.radius;
+        sum += (0.3 * l.color[0] + 0.59 * l.color[1] + 0.11 * l.color[2]) * a * a;
+      }
+      out[i] = sum;
+    }
+  return out;
+}
+
+function nearestFloor(w: number, h: number, cells: Uint8Array | number[], i: number) {
+  const cx = i % w;
+  const cz = Math.floor(i / w);
+  for (let r = 1; r < 3; r++)
+    for (let dz = -r; dz <= r; dz++)
+      for (let dx = -r; dx <= r; dx++) {
+        const x = cx + dx;
+        const z = cz + dz;
+        if (x >= 0 && z >= 0 && x < w && z < h && cells[z * w + x] === T.FLOOR) return z * w + x;
+      }
+  return -1;
+}
 
 const cache: Record<string, MapDef> = {};
 export function getMap(id: string): MapDef {

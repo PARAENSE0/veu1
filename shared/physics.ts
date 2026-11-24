@@ -119,6 +119,9 @@ export interface MoveParams {
   useStamina: boolean;
   canMove: boolean;
   canSprint: boolean;
+  /** estamina com melhorias (padrão: SURV.staminaMax) */
+  staminaMax?: number;
+  staminaRegenMult?: number;
 }
 
 export function forwardVec(yaw: number): [number, number] {
@@ -151,8 +154,10 @@ export function stepMove(g: Grid, s: MoveState, cmd: InputCmd, p: MoveParams): v
         sprinting = false;
       }
     } else {
+      const max = p.staminaMax ?? SURV.staminaMax;
       if (s.regenDelay > 0) s.regenDelay -= DT;
-      else s.stamina = Math.min(SURV.staminaMax, s.stamina + SURV.staminaRegen * DT);
+      else s.stamina = Math.min(max, s.stamina + SURV.staminaRegen * (p.staminaRegenMult ?? 1) * (moving ? 1 : SURV.staminaStillMult) * DT);
+      if (s.stamina > max) s.stamina = max;
       if (s.exhausted && s.stamina >= SURV.exhaustedUntil) s.exhausted = false;
     }
   }

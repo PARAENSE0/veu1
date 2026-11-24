@@ -4,7 +4,7 @@
  * (e para que cliente e servidor usem exatamente os mesmos números).
  */
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 // ---- Simulação ----
 export const TICK_RATE = 30; // ticks do servidor por segundo
@@ -35,14 +35,16 @@ export const SURV = {
   staminaRegenDelay: 1.0,
   exhaustedUntil: 30, // fica exausto ao zerar até recuperar este valor
   hpMax: 100,
-  hitDamage: 50,
+  /** abaixo disso o sobrevivente fica "ferido" (deixa rastro de sangue, gera ruído) */
+  woundedHp: 40,
   bleedout: 60, // segundos caído até morrer
   reviveTime: 4,
   reviveHp: 40,
   medkitTime: 4,
   medkitHeal: 50,
-  hasteAfterHit: 2.0, // adrenalina após ser atingido
-  hasteMult: 1.3,
+  hasteAfterHit: 1.4, // adrenalina após ser atingido
+  hasteMult: 1.2,
+  staminaStillMult: 1.6, // recupera mais rápido parado
   inventorySlots: 4,
   lockerPressure: 20, // após X s escondido o coração denuncia
 } as const;
@@ -55,10 +57,17 @@ export const ENT = {
   attackRange: 2.4,
   attackArcCos: Math.cos((55 * Math.PI) / 180),
   attackWindup: 0.35,
-  attackCooldownHit: 1.6,
+  /** dano do ataque comum: 18% da vida de um humano (nunca derruba com 2 golpes) */
+  attackDamage: 18,
+  /** golpe especial (botão direito): mais forte, mais lento e com recarga */
+  specialDamage: 34,
+  specialWindup: 0.8,
+  specialRange: 2.9,
+  specialArcCos: Math.cos((65 * Math.PI) / 180),
+  attackCooldownHit: 1.25,
   attackCooldownMiss: 0.9,
-  hitSlow: 1.6, // segundos lento após acertar
-  hitSlowMult: 0.45,
+  hitSlow: 0.9, // segundos lento após acertar
+  hitSlowMult: 0.6,
   camoDelay: 2.0, // parado/espreitando por X s => camuflado
   camoMaxSpeed: 1.9,
   lockerWrongStun: 1.2,
@@ -68,7 +77,7 @@ export const ENT = {
   levelSpeedMult: [1, 1, 1.04],
 } as const;
 
-export type AbilityId = 'rastro' | 'eco' | 'ruptura' | 'parasita';
+export type AbilityId = 'rastro' | 'eco' | 'ruptura' | 'parasita' | 'golpe';
 
 export interface AbilityDef {
   id: AbilityId;
@@ -103,6 +112,14 @@ export const ABILITIES: Record<AbilityId, AbilityDef> = {
     cooldown: 24,
     duration: 2.2,
     limit: 'Não pode atacar durante o avanço; fica lento por 0,9 s ao terminar.',
+  },
+  golpe: {
+    id: 'golpe',
+    name: 'GOLPE BRUTAL',
+    desc: 'Ataque especial com as duas garras: mais dano e alcance maior.',
+    cooldown: 12,
+    duration: 0,
+    limit: 'Preparação de 0,8 s (fica lento e dá para fugir); 34% da vida, longe de um abate instantâneo.',
   },
   parasita: {
     id: 'parasita',
@@ -229,3 +246,7 @@ export const SUPPLY_RESPAWN = 90; // segundos para repor uma caixa coletada
 export const SUPPLY_RESPAWN_SAFE_DIST = 15; // não reaparece perto de sobreviventes
 /** Quantidade de caixas ativas ao mesmo tempo. */
 export const supplyCap = (nSurv: number) => 2 + nSurv;
+
+/** Portas automáticas (humanos): distância (m) do sensor até a borda do vão e atraso para fechar. */
+export const AUTO_DOOR_RANGE = 0.9;
+export const AUTO_DOOR_CLOSE_DELAY = 1.5;

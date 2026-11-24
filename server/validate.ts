@@ -12,7 +12,7 @@ const cmd = z.object({
   b: z.number().int().min(0).max(3),
 });
 
-const ability = z.enum(['rastro', 'eco', 'ruptura', 'parasita']);
+const ability = z.enum(['rastro', 'eco', 'ruptura', 'parasita', 'golpe']);
 const eco = z.enum(['passos', 'porta', 'radio', 'alarme', 'presenca']);
 
 export const clientMsg = z.discriminatedUnion('t', [

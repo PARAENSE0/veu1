@@ -23,6 +23,8 @@ import {
   FLARE_RADIUS,
   FLARE_TIME,
   INTERACT_RANGE,
+  AUTO_DOOR_RANGE,
+  AUTO_DOOR_CLOSE_DELAY,
   ITEM_INFO,
   MATCH_DURATION,
   MAX_QUEUED_CMDS,
@@ -64,6 +66,7 @@ import { dist2, forwardVec, isOpaque, isSolid, lineOfSight, makeGrid, pickTarget
 import type { Loadout, Stats } from '../shared/progression';
 import { PF, type EcoType, type GameEvent, type MatchIntro, type MatchResults, type PlayerResult, type PStatus, type Role, type ServerMsg, type SnapPlayer, type Snapshot, type SoundKind } from '../shared/protocol';
 import { Rng } from '../shared/rng';
+import { modsFor, type Mods, type UpgradeLevels } from '../shared/upgrades';
 import { buildTasks, taskView, type Task } from './tasks';
 
 export interface MatchPlayerInit {
@@ -71,6 +74,7 @@ export interface MatchPlayerInit {
   name: string;
   role: Role;
   loadout: Loadout;
+  upgrades?: Partial<UpgradeLevels>;
 }
 
 type Channel = { kind: 'station'; station: string; label: string } | { kind: 'revive'; target: string; label: string } | { kind: 'heal'; label: string } | { kind: 'supply'; supply: string; label: string };
@@ -103,7 +107,7 @@ interface MPlayer extends MoveState {
   hasteUntil: number;
   stunUntil: number;
   // entidade
-  attackPhase: 'none' | 'windup';
+  attackPhase: 'none' | 'windup' | 'special';
   attackT: number;
   attackCd: number;
   cd: Record<AbilityId, number>;
@@ -140,6 +144,8 @@ interface MPlayer extends MoveState {
   burnUntil: number;
   burnBy: string | null;
   hurtSoundAt: number;
+  mods: Mods;
+  heavy: boolean;
 }
 
 interface Supply {
@@ -163,7 +169,7 @@ export interface MatchHooks {
   onEnd(results: MatchResults, stats: Map<string, { role: Role; stats: Partial<Stats>; result: PlayerResult }>): void;
 }
 
-const zeroAbilities = (): Record<AbilityId, number> => ({ rastro: 0, eco: 0, ruptura: 0, parasita: 0 });
+const zeroAbilities = (): Record<AbilityId, number> => ({ rastro: 0, eco: 0, ruptura: 0, parasita: 0, golpe: 0 });
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
 export class Match {
@@ -182,6 +188,7 @@ export class Match {
   tasks: Task[];
   stage = 1;
   private doorLock = new Map<number, number>();
+  private doorUse = new Map<number, number>();
   private jamUntil = new Map<string, number>();
   private zoneDark = new Map<string, number>();
   private powerOn = false;
@@ -249,7 +256,7 @@ export class Match {
       z,
       yaw: 0,
       pitch: 0,
-      stamina: SURV.staminaMax,
+      stamina: modsFor(p.role, p.upgrades ?? {}).staminaMax,
       exhausted: false,
       regenDelay: 0,
       crouch: false,
@@ -308,12 +315,15 @@ export class Match {
       burnUntil: 0,
       burnBy: null,
       hurtSoundAt: 0,
+      mods: modsFor(p.role, p.upgrades ?? {}),
+      heavy: false,
     };
   }
 
   intro(forId: string): MatchIntro {
     const me = this.players.get(forId)!;
     return {
+      mods: me.mods,
       matchId: this.id,
       mapId: this.mapId,
       seed: this.seed,
@@ -558,6 +568,7 @@ export class Match {
   private damageEntity(amount: number, by: MPlayer, at: { x: number; y: number; z: number }, emit: boolean) {
     const e = this.entity;
     if (this.ended || e.hp <= 0) return;
+    amount *= e.mods.damageTakenMult;
     e.hp = Math.max(0, e.hp - amount);
     e.lastDamageAt = this.time;
     e.camo = false;
@@ -758,7 +769,7 @@ export class Match {
       for (const s of this.supplies.values()) cands.push({ x: s.x, z: s.z, prio: 0.7, run: () => this.startCollect(p, s) });
       for (const o of this.players.values())
         if (o !== p && o.role === 'survivor' && o.status === 'downed') cands.push({ x: o.x, z: o.z, prio: 1.2, run: () => this.startChannel(p, { kind: 'revive', target: o.id, label: `Resgatando ${o.name}` }) });
-      for (const d of this.map.doors) if (!d.secure) cands.push({ x: d.x, z: d.z, half: 1, prio: 0, run: () => this.toggleDoor(p, d.idx) });
+      // portas abrem sozinhas para humanos (ver updateDoors)
       for (const l of this.map.lockers) cands.push({ x: l.x, z: l.z, half: 1, prio: 0.1, run: () => this.enterLocker(p, l.id) });
       for (const s of this.map.stations) {
         const act = this.stationActive(s.id);
@@ -808,22 +819,61 @@ export class Match {
       return;
     }
     const open = this.grid.doorOpen[idx];
-    if (open) {
-      // não fecha em cima de alguém
-      const cx = idx % this.map.w;
-      const cz = Math.floor(idx / this.map.w);
-      for (const o of this.players.values()) {
-        if (o.status === 'dead' || o.status === 'escaped' || o.hidden) continue;
-        const r = o.role === 'entity' ? ENT.radius : PLAYER_RADIUS;
-        if (o.x + r > cx * CELL && o.x - r < (cx + 1) * CELL && o.z + r > cz * CELL && o.z - r < (cz + 1) * CELL) return;
-      }
-    }
+    if (open && this.doorOccupied(idx, 0)) return; // não fecha em cima de alguém
     this.grid.doorOpen[idx] = open ? 0 : 1;
+    this.doorUse.set(idx, this.time);
     const d = this.map.doors.find((x) => x.idx === idx)!;
     this.soundAt('porta', d.x, d.z);
     if (p.role === 'survivor') {
       this.pingEntity(d.x, d.z, 'porta', 0);
       if (this.near(this.entity, d.x, d.z, 30)) this.ecoMemory.set('porta', this.time);
+    }
+  }
+
+  /** Alguém (qualquer função) está no vão da porta? margin amplia a área checada. */
+  private doorOccupied(idx: number, margin: number) {
+    const cx = idx % this.map.w;
+    const cz = Math.floor(idx / this.map.w);
+    for (const o of this.players.values()) {
+      if (o.status === 'dead' || o.status === 'escaped' || o.hidden) continue;
+      const r = (o.role === 'entity' ? ENT.radius : PLAYER_RADIUS) + margin;
+      if (o.x + r > cx * CELL && o.x - r < (cx + 1) * CELL && o.z + r > cz * CELL && o.z - r < (cz + 1) * CELL) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Portas automáticas: abrem quando um humano se aproxima e fecham sozinhas
+   * 1,5 s depois que ninguém mais está perto — nunca em cima de alguém. A
+   * entidade não aciona o sensor (precisa abrir com a interação). Portas de
+   * segurança e portas travadas pelo Parasita mantêm suas regras.
+   */
+  private updateDoors() {
+    for (const d of this.map.doors) {
+      if (d.secure) continue;
+      const idx = d.idx;
+      if ((this.doorLock.get(idx) ?? 0) > this.time) continue;
+      let human = false;
+      for (const o of this.players.values()) {
+        if (o.role !== 'survivor' || o.hidden || (o.status !== 'alive' && o.status !== 'downed') || !o.connected) continue;
+        if (Math.hypot(Math.max(Math.abs(o.x - d.x) - CELL / 2, 0), Math.max(Math.abs(o.z - d.z) - CELL / 2, 0)) <= AUTO_DOOR_RANGE) {
+          human = true;
+          break;
+        }
+      }
+      const open = this.grid.doorOpen[idx] === 1;
+      if (human) {
+        this.doorUse.set(idx, this.time);
+        if (!open) {
+          this.grid.doorOpen[idx] = 1;
+          this.soundAt('porta', d.x, d.z);
+          this.pingEntity(d.x, d.z, 'porta', 0);
+          if (this.near(this.entity, d.x, d.z, 30)) this.ecoMemory.set('porta', this.time);
+        }
+      } else if (open && this.time - (this.doorUse.get(idx) ?? -99) >= AUTO_DOOR_CLOSE_DELAY && !this.doorOccupied(idx, 0.25)) {
+        this.grid.doorOpen[idx] = 0;
+        this.soundAt('porta', d.x, d.z);
+      }
     }
   }
 
@@ -954,9 +1004,9 @@ export class Match {
       const dx = o.x - e.x;
       const dz = o.z - e.z;
       const d = Math.hypot(dx, dz);
-      if (d > ENT.attackRange + PLAYER_RADIUS) continue;
+      if (d > (e.heavy ? ENT.specialRange : ENT.attackRange) + PLAYER_RADIUS) continue;
       const dot = d > 0.05 ? (dx * fx + dz * fz) / d : 1;
-      if (dot < ENT.attackArcCos && d > 0.9) continue;
+      if (dot < (e.heavy ? ENT.specialArcCos : ENT.attackArcCos) && d > 0.9) continue;
       if (!lineOfSight(this.grid, e.x, e.z, o.x, o.z)) continue;
       // preferir alvos em pé
       const score = d + (o.status === 'downed' ? 1.5 : 0);
@@ -969,6 +1019,7 @@ export class Match {
       e.attackCd = ENT.attackCooldownMiss;
       return;
     }
+    // um único alvo por golpe: a animação não acerta duas vezes
     this.damage(best, e);
     e.attackCd = ENT.attackCooldownHit;
   }
@@ -981,7 +1032,8 @@ export class Match {
       this.kill(o, 'entity');
       return;
     }
-    o.hp -= SURV.hitDamage;
+    const base = e.heavy ? ENT.specialDamage : ENT.attackDamage;
+    o.hp = Math.max(0, o.hp - Math.round(base * e.mods.attackMult * o.mods.damageTakenMult * 10) / 10);
     e.stats.hits = (e.stats.hits ?? 0) + 1;
     e.score += 100;
     e.resonance += 1;
@@ -1027,7 +1079,19 @@ export class Match {
     const def = ABILITIES[id];
     const lvl = this.resonanceLevel(e);
     const cdMult = ENT.levelCooldownMult[lvl - 1];
+    if (id === 'golpe') {
+      if (e.attackCd > 0 || e.active.ruptura > 0) return;
+      e.attackPhase = 'special';
+      e.attackT = ENT.specialWindup;
+      e.heavy = true;
+      e.camo = false;
+      e.camoT = 0;
+      this.broadcastNear(e.x, e.z, { k: 'attack', id: e.id });
+      this.soundAt('ataque', e.x, e.z);
+    }
     switch (id) {
+      case 'golpe':
+        break;
       case 'rastro':
         e.active.rastro = def.duration;
         break;
@@ -1090,7 +1154,8 @@ export class Match {
         break;
       }
     }
-    e.cd[id] = def.cooldown * cdMult;
+    e.cd[id] = def.cooldown * cdMult * e.mods.cooldownMult;
+    if (e.active[id] > 0) e.active[id] *= e.mods.durationMult;
     this.broadcastNear(e.x, e.z, { k: 'ability', id: e.id, a: id });
   }
 
@@ -1177,7 +1242,7 @@ export class Match {
           p.channel = null;
           continue;
         }
-        p.channelT += DT;
+        p.channelT += DT * p.mods.interactMult;
         if (p.channelT >= SURV.reviveTime) {
           t.status = 'alive';
           t.hp = SURV.reviveHp;
@@ -1194,10 +1259,10 @@ export class Match {
           p.channel = null;
           continue;
         }
-        p.channelT += DT;
+        p.channelT += DT * p.mods.interactMult;
         if (p.channelT >= SUPPLY_COLLECT_TIME) this.finishCollect(p, s);
       } else if (ch.kind === 'heal') {
-        p.channelT += DT;
+        p.channelT += DT * p.mods.interactMult;
         if (p.channelT >= SURV.medkitTime) {
           const slot = p.inventory.indexOf('kit');
           if (slot >= 0) {
@@ -1217,8 +1282,9 @@ export class Match {
       const t = act.task;
       const jammed = (this.jamUntil.get(sid) ?? 0) > this.time;
       if (jammed) continue;
-      const rate = 1 + 0.5 * (ps.length - 1);
-      t.progress[sid] = (t.progress[sid] ?? 0) + DT * Math.min(2, rate);
+      const speed = ps.reduce((a, p) => a + p.mods.interactMult, 0) / ps.length;
+      const rate = (1 + 0.5 * (ps.length - 1)) * speed;
+      t.progress[sid] = (t.progress[sid] ?? 0) + DT * Math.min(2 * speed, rate);
       for (const p of ps) {
         p.channelT = t.progress[sid] / t.channelTime;
         if (this.tick % Math.round(NOISE.channelEvery / DT) === 0) this.pingEntity(p.x, p.z, 'objetivo', NOISE.channelJitter);
@@ -1264,6 +1330,7 @@ export class Match {
 
     this.checkEnd();
 
+    if (!this.ended) this.updateDoors();
     if (this.tick % SNAPSHOT_EVERY === 0) this.sendSnapshots();
     for (const [id, evs] of this.events) {
       if (evs.length) this.hooks.send(id, { t: 'ev', e: evs });
@@ -1278,6 +1345,8 @@ export class Match {
       if (p.active.ruptura > 0) mult *= RUPTURA_MULT;
       else if (p.recoverUntil > this.time) mult *= 0.6;
       if (p.slowUntil > this.time) mult *= ENT.hitSlowMult;
+      if (p.attackPhase === 'special') mult *= 0.5;
+      mult *= p.mods.speedMult;
       return { walk: ENT.speed, sprint: ENT.speed, crouch: ENT.stalkSpeed, mult, radius: ENT.radius, useStamina: false, canMove: p.stunUntil <= this.time, canSprint: false };
     }
     if (p.status === 'downed') return { walk: SURV.crawl, sprint: SURV.crawl, crouch: SURV.crawl, mult: 1, radius: PLAYER_RADIUS, useStamina: false, canMove: true, canSprint: false };
@@ -1286,11 +1355,13 @@ export class Match {
       walk: SURV.walk,
       sprint: SURV.sprint,
       crouch: SURV.crouch,
-      mult: p.hasteUntil > this.time ? SURV.hasteMult : 1,
+      mult: (p.hasteUntil > this.time ? SURV.hasteMult : 1) * p.mods.speedMult,
       radius: PLAYER_RADIUS,
       useStamina: true,
       canMove: alive,
       canSprint: alive,
+      staminaMax: p.mods.staminaMax,
+      staminaRegenMult: p.mods.staminaRegenMult,
     };
   }
 
@@ -1353,7 +1424,7 @@ export class Match {
       this.pingEntity(p.x, p.z, 'corrida', NOISE.sprintJitter);
       if (this.near(e, p.x, p.z, 25)) this.ecoMemory.set('passos', this.time);
     }
-    if (p.hp <= SURV.hitDamage && p.noiseT <= -3) {
+    if (p.hp <= SURV.woundedHp && p.noiseT <= -3) {
       p.noiseT = 0;
       this.pingEntity(p.x, p.z, 'ferido', 4);
     }
@@ -1381,11 +1452,12 @@ export class Match {
       e.hp = Math.min(e.maxHp, e.hp + ENTITY_REGEN * DT);
     }
     if (e.attackCd > 0) e.attackCd = Math.max(0, e.attackCd - DT);
-    if (e.attackPhase === 'windup') {
+    if (e.attackPhase !== 'none') {
       e.attackT -= DT;
       if (e.attackT <= 0) {
         e.attackPhase = 'none';
         this.resolveAttack(e);
+        e.heavy = false;
       }
     }
     for (const id of Object.keys(e.cd) as AbilityId[]) {
@@ -1446,9 +1518,27 @@ export class Match {
       }
       p.stats.matches = 1;
       p.stats.playSeconds = Math.floor(this.time);
-      const xp = p.outcome === 'disconnected' ? 0 : Math.round(50 + p.score / 5 + (won ? 100 : 0));
+    }
+    // MVP: maior pontuação entre quem ficou até o fim
+    let mvp: MPlayer | null = null;
+    for (const p of this.players.values()) if (p.outcome !== 'disconnected' && (!mvp || p.score > mvp.score)) mvp = p;
+    for (const p of this.players.values()) {
+      const won = (p.role === 'entity') === (winner === 'entity');
+      const parts: { label: string; xp: number }[] = [];
+      if (p.outcome !== 'disconnected') {
+        parts.push({ label: 'Participação', xp: 50 });
+        parts.push({ label: 'Desempenho', xp: Math.round(p.score / 5) });
+        if (won) parts.push({ label: 'Vitória', xp: 100 });
+        if (p.outcome === 'escaped') parts.push({ label: 'Fuga', xp: 60 });
+        else if (p.outcome === 'survived') parts.push({ label: 'Sobrevivência', xp: 40 });
+        if (p === mvp && p.score > 0) {
+          const sub = parts.reduce((a, b) => a + b.xp, 0);
+          parts.push({ label: 'MVP (+20%)', xp: Math.round(sub * 0.2) });
+        }
+      }
+      const xp = parts.reduce((a, b) => a + b.xp, 0);
       const coins = Math.round(xp / 4);
-      const r: PlayerResult = { id: p.id, name: p.name, role: p.role, outcome: p.outcome, score: p.score, xp, coins };
+      const r: PlayerResult = { id: p.id, name: p.name, role: p.role, outcome: p.outcome!, score: p.score, xp, coins, xpParts: parts, mvp: p === mvp && p.score > 0 };
       players.push(r);
       out.set(p.id, { role: p.role, stats: p.stats, result: r });
     }
@@ -1470,10 +1560,10 @@ export class Match {
     if (p.hidden) f |= PF.HIDDEN;
     if (p.camo) f |= PF.CAMO;
     if (p.active.ruptura > 0) f |= PF.DASH;
-    if (p.attackPhase === 'windup') f |= PF.ATTACK;
+    if (p.attackPhase !== 'none') f |= PF.ATTACK;
     if (p.channel && p.channel.kind !== 'heal') f |= PF.CHANNEL;
     if (p.channel?.kind === 'heal') f |= PF.HEALING;
-    if (p.hp <= SURV.hitDamage && p.status === 'alive') f |= PF.WOUNDED;
+    if (p.hp <= SURV.woundedHp && p.status === 'alive') f |= PF.WOUNDED;
     if (p.status === 'dead') f |= PF.DEAD;
     if (p.status === 'escaped') f |= PF.ESCAPED;
     if (!p.connected) f |= PF.DISCONNECTED;
@@ -1627,7 +1717,7 @@ export class Match {
   }
 
   /** Somente testes: altera o estado de um jogador (não acessível pela rede). */
-  debugSet(id: string, patch: Partial<Pick<MPlayer, 'x' | 'z' | 'yaw' | 'pitch' | 'hp' | 'fuel' | 'weapon'>> & { reserve?: Partial<MPlayer['reserve']>; mag?: Partial<MPlayer['mag']> }) {
+  debugSet(id: string, patch: Partial<Pick<MPlayer, 'x' | 'z' | 'yaw' | 'pitch' | 'hp' | 'fuel' | 'weapon' | 'stamina' | 'status'>> & { reserve?: Partial<MPlayer['reserve']>; mag?: Partial<MPlayer['mag']> }) {
     const p = this.players.get(id)!;
     const { reserve, mag, ...rest } = patch;
     Object.assign(p, rest);
@@ -1648,7 +1738,7 @@ export class Match {
       stage: this.stage,
       tasks: this.tasks,
       items: [...this.items.values()],
-      players: [...this.players.values()].map((p) => ({ id: p.id, role: p.role, x: p.x, z: p.z, hp: p.hp, maxHp: p.maxHp, status: p.status, hidden: p.hidden, inv: p.inventory, weapon: p.weapon, mag: { ...p.mag }, reserve: { ...p.reserve }, fuel: p.fuel, reloading: p.reloadUntil > 0 })),
+      players: [...this.players.values()].map((p) => ({ id: p.id, role: p.role, x: p.x, z: p.z, hp: p.hp, maxHp: p.maxHp, status: p.status, hidden: p.hidden, inv: p.inventory, weapon: p.weapon, mag: { ...p.mag }, reserve: { ...p.reserve }, fuel: p.fuel, reloading: p.reloadUntil > 0, stamina: p.stamina, attackCd: p.attackCd, cd: { ...p.cd }, mods: { ...p.mods } })),
       supplies: [...this.supplies.values()].map((x) => ({ ...x })),
       supplyRespawnAt: [...this.supplyRespawnAt],
       podsReady: [...this.podsReady],

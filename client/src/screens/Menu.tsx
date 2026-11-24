@@ -13,13 +13,15 @@ export function MainMenu() {
   const status = useApp((s) => s.net);
   const [confirmOut, setConfirmOut] = useState(false);
   if (!profile) return null;
+  const pendingFriends = profile.friendRequests;
   const items: [string, () => void, string?, boolean?][] = [
     [room ? 'Voltar à sala' : 'Jogar', () => go(room ? 'lobby' : 'play'), room ? room.code : undefined, true],
-    ['Personalização', () => go('customize')],
-    ['Loja de cosméticos', () => go('shop'), `${profile.coins} ◈`],
-    ['Inventário', () => go('collection'), `${profile.owned.length} itens`],
-    ['Estatísticas', () => go('stats'), `nível ${profile.level}`],
-    ['Histórico de partidas', () => go('history')],
+    ['Perfil', () => go('profile'), `nível ${profile.level}`],
+    ['Ranking', () => go('ranking')],
+    ['Amigos', () => go('friends'), pendingFriends ? `${pendingFriends} pedido(s)` : undefined],
+    ['Melhorias', () => go('upgrades'), `${profile.coins.toLocaleString('pt-BR')} ◈`],
+    ['Código de presente', () => go('gift')],
+    ['Estatísticas', () => go('stats')],
     ['Configurações', () => go('settings')],
   ];
   return (
@@ -59,13 +61,13 @@ export function MainMenu() {
               {profile.username} {profile.guest && <span className="tag warn">convidado</span>}
             </div>
             <div className="mono muted" style={{ fontSize: 11 }}>
-              NÍVEL {profile.level} · {profile.levelInto}/{profile.levelNeed} XP
+              {profile.maxLevel ? `NÍVEL MÁXIMO ${profile.level}` : `NÍVEL ${profile.level} · ${profile.levelInto}/${profile.levelNeed} XP`}
             </div>
           </div>
           <span className={`tag ${status === 'online' ? 'good' : status === 'connecting' ? 'warn' : 'danger'}`}>{status === 'online' ? 'online' : status === 'connecting' ? 'conectando' : 'offline'}</span>
         </div>
         <div style={{ marginTop: 8 }}>
-          <Bar value={profile.levelInto / profile.levelNeed} />
+          <Bar value={profile.maxLevel ? 1 : profile.levelInto / Math.max(1, profile.levelNeed)} />
         </div>
       </div>
       {confirmOut && (

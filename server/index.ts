@@ -7,6 +7,7 @@
  *   TRUST_PROXY     "1" se estiver atrás de proxy reverso (usa X-Forwarded-For)
  *   ALLOWED_ORIGINS lista separada por vírgula de origens aceitas no WebSocket
  *   ANDROID_ASSETLINKS conteúdo JSON do assetlinks.json gerado pelo PWABuilder
+ *   ADMIN_TOKEN     senha para criar códigos de presente via POST /api/admin/codes
  *   ICE_SERVERS     JSON com servidores STUN/TURN para a voz, ex.:
  *                   [{"urls":"turn:turn.exemplo.com:3478","username":"u","credential":"s"}]
  */
@@ -23,6 +24,7 @@ const app = await createApp({
   publicDir: join(here, 'public'),
   trustProxy: process.env.TRUST_PROXY === '1',
   assetLinks: process.env.ANDROID_ASSETLINKS ? JSON.stringify(JSON.parse(process.env.ANDROID_ASSETLINKS)) : undefined,
+ adminToken: process.env.ADMIN_TOKEN || undefined,
   iceServers: process.env.ICE_SERVERS ? JSON.parse(process.env.ICE_SERVERS) : undefined,
   allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim()) : undefined,
 });

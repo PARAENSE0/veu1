@@ -13,6 +13,18 @@ services:
         value: "22"
       - key: TRUST_PROXY
         value: "1"
+      # senha da administração de códigos de presente (o Render gera uma aleatória;
+      # veja o valor em Environment no painel). Sem ela, /api/admin/codes fica bloqueado.
+      - key: ADMIN_TOKEN
+        generateValue: true
+      # Para as contas/progresso NÃO se perderem quando o servidor reinicia, use um
+      # plano pago com disco persistente e descomente as linhas abaixo:
+      # - key: DATA_FILE
+      #   value: /var/data/db.json
       # Depois de gerar o APK no PWABuilder, cole aqui o conteúdo do assetlinks.json:
       # - key: ANDROID_ASSETLINKS
       #   value: '[{"relation":["delegate_permission/common.handle_all_urls"],"target":{...}}]'
+    # disk:              # requer plano pago (Starter ou superior)
+    #   name: veu-dados
+    #   mountPath: /var/data
+    #   sizeGB: 1

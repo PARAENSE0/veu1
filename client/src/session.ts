@@ -86,6 +86,18 @@ export function installRouter() {
       case 'rooms':
         setState({ rooms: m.list });
         break;
+      case 'notice': {
+        const n = m.n;
+        setState({ notices: [...st.notices.slice(-30), n] });
+        if (n.kind === 'friend_request') toast(`${n.from.username} quer ser seu amigo (veja em Amigos).`, 'info');
+        else if (n.kind === 'friend_accept') toast(`${n.from.username} agora é seu amigo.`, 'good');
+        else if (n.kind === 'invite') {
+          setState({ invite: n });
+          toast(`${n.from.username} convidou você para uma partida.`, 'info');
+        }
+        audio.ui('ok');
+        break;
+      }
       case 'match:load':
         setState({ intro: m.intro, matchStarted: false, results: null });
         go('match');

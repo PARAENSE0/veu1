@@ -49,8 +49,8 @@ export function CharacterPreview(p: { loadout: Loadout; kind: 'survivor' | 'enti
       last = now;
       t += dt;
       const ent = kindRef.current === 'entity';
-      const camY = ent ? 1.7 : 1.05;
-      const dist = ent ? 6.2 : 3.9;
+      const camY = ent ? 1.5 : 1.0;
+      const dist = ent ? 6.4 : 3.6;
       r.begin({ x: 0, y: camY, z: dist, yaw: 0, pitch: ent ? 0.02 : -0.03, fov: 40 }, { ambient: [0.18, 0.2, 0.24], fog: [0.02, 0.05, 0.07], fogDensity: 0.02, vision: 0, time: t });
       r.setLights(
         [
@@ -66,7 +66,7 @@ export function CharacterPreview(p: { loadout: Loadout; kind: 'survivor' | 'enti
       r.draw(r.cube, M, { layer: LAYER.FLOOR, uv: [2, 2] });
       const ap = resolveAppearance(loadRef.current);
       const yaw = Math.PI + t * 0.5 + drag;
-      if (ent) drawEntity(r, ap.entBody, ap.entGlow, { x: 0, z: 0, yaw, pitch: 0, speed: 0, phase: 0, time: t, stalk: false, attack: 0, dash: false, eco: Math.max(0, Math.sin(t * 0.7)) * 0.5, rastro: false, parasite: Math.max(0, Math.sin(t * 0.4)) }, { alpha: 1, emit: [0, 0, 0] });
+      if (ent) drawEntity(r, ap.entBody, ap.entGlow, { x: 0, z: 0, yaw, pitch: 0, speed: 0, phase: 0, time: t, stalk: false, attack: 0, dash: false, eco: Math.max(0, Math.sin(t * 0.7)) * 0.5, rastro: false, parasite: 0, special: (t % 9) > 7.5 ? Math.min(2, ((t % 9) - 7.5) / 0.8) : 0 }, { alpha: 1, emit: [0, 0, 0] });
       else drawSurvivor(r, ap, { x: 0, z: 0, yaw, pitch: 0, speed: 0, phase: 0, crouch: false, downed: false, channel: false, flash: false, time: t }, { alpha: 1, emit: [0, 0, 0] });
     };
     raf = requestAnimationFrame(loop);

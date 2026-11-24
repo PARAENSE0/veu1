@@ -8,6 +8,7 @@ import { MAPS } from '../shared/map';
 import type { ChatLine, MatchResults, RolePref, RoomInfo, RoomListEntry, RoomState, ServerMsg } from '../shared/protocol';
 import type { Loadout } from '../shared/progression';
 import { levelFromXp } from '../shared/progression';
+import type { UpgradeLevels } from '../shared/upgrades';
 import type { Accounts } from './accounts';
 import { Match } from './match';
 import type { Store, UserRecord } from './store';
@@ -30,6 +31,7 @@ interface Member {
   connected: boolean;
   leftAt: number;
   entityTurns: number;
+  upgrades: UpgradeLevels;
 }
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem 0/O/1/I
@@ -103,6 +105,7 @@ export class Room {
       connected: true,
       leftAt: 0,
       entityTurns: 0,
+      upgrades: { ...u.upgrades },
     });
     this.system(`${u.username} entrou na sala.`);
   }
@@ -158,7 +161,7 @@ export class Room {
     ent.entityTurns++;
     const inits = [...this.members.values()]
       .filter((m) => m.connected)
-      .map((m) => ({ id: m.id, name: m.name, role: m.id === ent.id ? ('entity' as const) : ('survivor' as const), loadout: m.loadout }));
+      .map((m) => ({ id: m.id, name: m.name, role: m.id === ent.id ? ('entity' as const) : ('survivor' as const), loadout: m.loadout, upgrades: m.upgrades }));
     const matchId = randomUUID();
     this.match = new Match(matchId, this.mapId, randomInt(2 ** 31), inits, {
       send: (id, msg) => this.mgr.sendTo(id, msg),

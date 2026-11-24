@@ -2,6 +2,7 @@
  * Configurações do jogador (gráficos, controles, áudio, voz), salvas no navegador.
  */
 import type { Quality } from './game/renderer';
+import type { AimLevel } from './game/aim';
 
 export type QualityPreset = 'baixa' | 'media' | 'alta';
 
@@ -23,12 +24,15 @@ export type Action =
   | 'eco'
   | 'ruptura'
   | 'parasita'
+  | 'golpe'
   | 'ecoProximo'
   | 'falar'
   | 'camera'
   | 'atirar'
   | 'trocarArma'
-  | 'recarregar';
+  | 'recarregar'
+  | 'mapa'
+  | 'mira';
 
 export const ACTION_LABELS: Record<Action, string> = {
   frente: 'Mover para frente',
@@ -48,12 +52,15 @@ export const ACTION_LABELS: Record<Action, string> = {
   eco: 'Entidade: Eco Falso',
   ruptura: 'Entidade: Ruptura',
   parasita: 'Entidade: Parasita',
+  golpe: 'Entidade: Golpe Brutal (especial)',
   ecoProximo: 'Entidade: trocar som do Eco',
   falar: 'Falar (apertar para falar)',
   camera: 'Alternar 1ª/3ª pessoa',
   atirar: 'Atirar',
   trocarArma: 'Trocar de arma',
   recarregar: 'Recarregar',
+  mapa: 'Ampliar / reduzir minimapa',
+  mira: 'Ligar / desligar assistência de mira',
 };
 
 export const DEFAULT_BINDINGS: Record<Action, string> = {
@@ -74,12 +81,15 @@ export const DEFAULT_BINDINGS: Record<Action, string> = {
   eco: 'KeyR',
   ruptura: 'Space',
   parasita: 'KeyF',
+  golpe: 'Mouse2',
   ecoProximo: 'KeyZ',
   falar: 'KeyV',
   camera: 'KeyC',
   atirar: 'Mouse0',
   trocarArma: 'KeyQ',
   recarregar: 'KeyR',
+  mapa: 'KeyM',
+  mira: 'KeyT',
 };
 
 export interface Settings {
@@ -106,6 +116,10 @@ export interface Settings {
   micEnabled: boolean;
   pushToTalk: boolean;
   showFps: boolean;
+  /** assistência de mira (auto = forte no toque, média no mouse) */
+  aimAssist: AimLevel;
+  /** minimapa ampliado */
+  minimapBig: boolean;
 }
 
 export const PRESETS: Record<QualityPreset, Partial<Settings>> = {
@@ -149,6 +163,8 @@ export function defaultSettings(): Settings {
     micEnabled: false,
     pushToTalk: false,
     showFps: false,
+    aimAssist: 'auto',
+    minimapBig: false,
     ...PRESETS[q],
   };
 }
