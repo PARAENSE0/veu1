@@ -67,7 +67,7 @@ Legenda: ✅ concluído e testado · 🟡 parcial · ⬜ não iniciado
 - ✅ XP sem limite e ranking semanal com histórico; códigos 1MPARAENSE e 2MPARAENSE
 
 ## Etapa 7 — Finalização 🟡
-- ✅ Testes automatizados (v0.3): 71 unitários, 67 de balanceamento simulado, 82 de contas/social/códigos/semana, 32 de combate/portas/estamina, 22 de armas em rede, 19 com 9 jogadores, 56 de partida com bots, 54 + 30 no navegador
+- ✅ Testes automatizados (v0.3): 71 unitários, 67 de balanceamento simulado, 82 de contas/social/códigos/semana, 32 de combate/portas/estamina, 22 + 36 de armas em rede, 19 com 9 jogadores, 56 de partida com bots, 54 + 31 no navegador
 - ✅ Segurança básica (ver ARQUITETURA)
 - 🟡 Compatibilidade: testado no Chrome (desktop e modo de toque emulado); falta testar Firefox, Safari e celulares reais
 - ⬜ PgStore (adaptador PostgreSQL), HTTPS/TURN de produção, monitoramento

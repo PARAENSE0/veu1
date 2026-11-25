@@ -41,10 +41,10 @@ Desenvolvimento com recompilação automática: `npm run dev`.
 
 ```bash
 npm test               # unitários (71) + balanceamento simulado (67) + contas/social/códigos/semana (82)
-                       # + combate/portas/estamina (32) + armas em rede (22) + 9 jogadores (19)
-                       # + partida completa com bots (56)          → 349 verificações
+                       # + combate/portas/estamina (32) + armas em rede (22 + 36) + 9 jogadores (19)
+                       # + partida completa com bots (56)          → 385 verificações
 npm run test:browser   # Chrome real: menus, sorteio, ranking semanal, partida 3D, armas, minimapa,
-                       # vida, entidade derrubada, voz, PC e celular (54 + 30)
+                       # vida, entidade derrubada, voz, PC e celular (54 + 31)
 node tests/model-shots.mjs     # capturas dos modelos 3D em várias poses (revisão visual)
 bash scripts/check-schema.sh   # valida o schema PostgreSQL numa instância temporária
 npm run typecheck
