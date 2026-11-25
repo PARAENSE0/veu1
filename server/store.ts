@@ -12,7 +12,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { MatchHistoryEntry } from '../shared/protocol';
+import type { MatchHistoryEntry, WeekHistory } from '../shared/protocol';
 import { EMPTY_STATS, type Loadout, type Stats } from '../shared/progression';
 import { EMPTY_UPGRADES, type UpgradeLevels } from '../shared/upgrades';
 
@@ -46,6 +46,8 @@ export interface UserRecord {
   /** partidas já recompensadas (impede XP/moedas em dobro) */
   rewardedMatches: string[];
   lastSeen: string;
+  /** pontuação da semana atual do ranking semanal (zera na virada da semana) */
+  week: { id: string; xp: number; wins: number };
 }
 
 export interface RewardLogEntry {
@@ -78,6 +80,7 @@ export function normalizeUser(u: UserRecord): UserRecord {
   u.rewardedMatches ??= [];
   u.stats = { ...EMPTY_STATS, ...(u.stats ?? {}) };
   u.lastSeen ??= u.createdAt;
+  u.week ??= { id: '', xp: 0, wins: 0 };
   return u;
 }
 
@@ -101,6 +104,9 @@ export interface Store {
   getCode(code: string): Promise<GiftCode | null>;
   saveCode(c: GiftCode): Promise<void>;
   listCodes(): Promise<GiftCode[]>;
+  /** semanas encerradas do ranking (mais recentes primeiro) */
+  listWeeks(): Promise<WeekHistory[]>;
+  saveWeek(w: WeekHistory): Promise<void>;
   flush(): Promise<void>;
 }
 
@@ -109,6 +115,7 @@ interface DbFile {
   users: UserRecord[];
   sessions: SessionRecord[];
   codes?: GiftCode[];
+  weeks?: WeekHistory[];
 }
 
 export class FileStore implements Store {
@@ -116,6 +123,7 @@ export class FileStore implements Store {
   private byName = new Map<string, string>();
   private sessions = new Map<string, SessionRecord>();
   private codes = new Map<string, GiftCode>();
+  private weeks = new Map<string, WeekHistory>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private path: string | null) {}
@@ -126,6 +134,7 @@ export class FileStore implements Store {
     if (!existsSync(this.path)) return;
     const raw = JSON.parse(readFileSync(this.path, 'utf8')) as DbFile;
     for (const c of raw.codes ?? []) this.codes.set(c.code, c);
+    for (const w of raw.weeks ?? []) this.weeks.set(w.id, w);
     for (const u of raw.users) {
       normalizeUser(u);
       this.users.set(u.id, u);
@@ -154,6 +163,13 @@ export class FileStore implements Store {
   }
   async listCodes() {
     return [...this.codes.values()];
+  }
+  async listWeeks() {
+    return [...this.weeks.values()].sort((a, b) => b.id.localeCompare(a.id));
+  }
+  async saveWeek(w: WeekHistory) {
+    this.weeks.set(w.id, w);
+    this.schedule();
   }
   async createUser(u: UserRecord) {
     if (this.byName.has(u.usernameLower)) throw new Error('username_taken');
@@ -201,6 +217,7 @@ export class FileStore implements Store {
       users,
       sessions: [...this.sessions.values()].filter((s) => s.expires > now && !guestIds.has(s.userId)),
       codes: [...this.codes.values()],
+      weeks: [...this.weeks.values()],
     };
     const tmp = this.path + '.tmp';
     writeFileSync(tmp, JSON.stringify(data));

@@ -147,10 +147,12 @@ export function makeHttpHandler(opts: { accounts: Accounts; rooms: RoomManager; 
       }
       if (path === '/api/config') return send(res, 200, { iceServers: opts.iceServers });
       if (method === 'GET' && path === '/api/ranking') {
-        const by = new URL(req.url ?? '', 'http://x').searchParams.get('by') === 'vitorias' ? 'vitorias' : 'xp';
+        const q = new URL(req.url ?? '', 'http://x').searchParams.get('by');
+        const by = q === 'vitorias' ? 'vitorias' : q === 'xp' ? 'xp' : 'semanal';
         const viewer = await accounts.fromToken(bearer(req));
         return send(res, 200, await accounts.ranking(by, viewer && !viewer.guest ? viewer : null));
       }
+      if (method === 'GET' && path === '/api/ranking/history') return send(res, 200, { weeks: await accounts.weekHistory() });
       // administração de códigos de presente (exige ADMIN_TOKEN no servidor)
       if (path === '/api/admin/codes') {
         const tok = String(req.headers['x-admin-token'] ?? '');

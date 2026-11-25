@@ -27,7 +27,7 @@ function Row(p: { label: string; desc?: string; children: ReactNode }) {
   );
 }
 
-const SURV_ACTIONS: Action[] = ['frente', 'tras', 'esquerda', 'direita', 'correr', 'agachar', 'interagir', 'lanterna', 'inventario', 'item1', 'item2', 'item3', 'item4', 'atirar', 'trocarArma', 'recarregar', 'mira', 'mapa', 'camera', 'falar'];
+const SURV_ACTIONS: Action[] = ['frente', 'tras', 'esquerda', 'direita', 'correr', 'agachar', 'interagir', 'lanterna', 'inventario', 'item1', 'item2', 'item3', 'item4', 'item5', 'atirar', 'trocarArma', 'recarregar', 'mira', 'mapa', 'camera', 'falar'];
 const ENT_ACTIONS: Action[] = ['golpe', 'rastro', 'eco', 'ruptura', 'parasita', 'ecoProximo'];
 
 export function SettingsPanel(p: { compact?: boolean }) {

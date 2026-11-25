@@ -17,6 +17,9 @@ services:
       # veja o valor em Environment no painel). Sem ela, /api/admin/codes fica bloqueado.
       - key: ADMIN_TOKEN
         generateValue: true
+      # segundos que a entidade fica derrubada antes de levantar (3 a 120)
+      - key: ENTITY_DOWN_TIME
+        value: "20"
       # Para as contas/progresso NÃO se perderem quando o servidor reinicia, use um
       # plano pago com disco persistente e descomente as linhas abaixo:
       # - key: DATA_FILE

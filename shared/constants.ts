@@ -4,7 +4,7 @@
  * (e para que cliente e servidor usem exatamente os mesmos números).
  */
 
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 // ---- Simulação ----
 export const TICK_RATE = 30; // ticks do servidor por segundo
@@ -45,7 +45,7 @@ export const SURV = {
   hasteAfterHit: 1.4, // adrenalina após ser atingido
   hasteMult: 1.2,
   staminaStillMult: 1.6, // recupera mais rápido parado
-  inventorySlots: 4,
+  inventorySlots: 5,
   lockerPressure: 20, // após X s escondido o coração denuncia
 } as const;
 
@@ -186,66 +186,107 @@ export const VIEW_RANGE = 45;
 export const THREAT_RADIUS = 26;
 export const EVENT_SOUND_RANGE = 45;
 
-// ---- Armas dos sobreviventes (nomes originais) ----
-export type WeaponId = 'pistola' | 'fuzil' | 'lanca';
-export const WEAPON_ORDER: WeaponId[] = ['pistola', 'fuzil', 'lanca'];
+// ---- Armas dos sobreviventes ----
+// Ninguém começa armado: as armas aparecem em pontos do mapa (ver WEAPON_COUNTS).
+export type WeaponId = 'pistola' | 'fuzil' | 'escopeta' | 'lanca';
+export type GunId = 'pistola' | 'fuzil' | 'escopeta';
+export const WEAPON_ORDER: WeaponId[] = ['pistola', 'fuzil', 'escopeta', 'lanca'];
+export const GUN_IDS: GunId[] = ['pistola', 'fuzil', 'escopeta'];
 
 export interface GunDef {
-  id: 'pistola' | 'fuzil';
+  id: GunId;
   name: string;
   short: string;
+  /** dano por projétil (a escopeta dispara vários) */
   damage: number;
+  /** projéteis por disparo */
+  pellets: number;
   interval: number; // segundos entre disparos
   auto: boolean; // dispara enquanto o gatilho estiver pressionado
   mag: number;
   reload: number;
   range: number;
   spread: number; // radianos (desvio máximo)
+  /** abertura extra por disparo seguido (recuo), até spread × 2 */
+  recoil: number;
+  /** queda de dano: integral até falloffStart, cai até falloffMin em range */
+  falloffStart: number;
+  falloffMin: number;
   maxReserve: number;
-  startMag: number;
-  startReserve: number;
+  /** munição que vem na arma quando ela é encontrada no mapa */
+  pickupMag: number;
 }
 
-export const GUNS: Record<'pistola' | 'fuzil', GunDef> = {
-  pistola: { id: 'pistola', name: 'Pistola P-50 “Âncora”', short: 'P-50', damage: 40, interval: 0.38, auto: false, mag: 8, reload: 1.5, range: 32, spread: 0.012, maxReserve: 32, startMag: 8, startReserve: 8 },
-  fuzil: { id: 'fuzil', name: 'Fuzil FR-9 “Maré”', short: 'FR-9', damage: 15, interval: 0.1, auto: true, mag: 30, reload: 2.3, range: 40, spread: 0.03, maxReserve: 90, startMag: 0, startReserve: 0 },
+/**
+ * Balanceamento (vida base da entidade = ENTITY_HP_BASE = 1.200):
+ *  - pistola: 50 por tiro × 8 no pente → 3 pentes (24 tiros) derrubam;
+ *  - AK-47: 40 por tiro × 30 no pente → 1 pente derruba;
+ *  - escopeta: 8 chumbos × 30 = 240 de perto (até 5 m); com "Poder de fogo"
+ *    no máximo (+25%) = 300 → 4 tiros bem acertados derrubam. De longe o dano
+ *    cai (até 30% em 18 m) e a dispersão faz chumbos errarem.
+ */
+export const GUNS: Record<GunId, GunDef> = {
+  pistola: { id: 'pistola', name: 'Pistola P-50', short: 'PISTOLA', damage: 50, pellets: 1, interval: 0.38, auto: false, mag: 8, reload: 1.5, range: 32, spread: 0.012, recoil: 0, falloffStart: 32, falloffMin: 1, maxReserve: 40, pickupMag: 8 },
+  fuzil: { id: 'fuzil', name: 'AK-47', short: 'AK-47', damage: 40, interval: 0.1, pellets: 1, auto: true, mag: 30, reload: 2.4, range: 40, spread: 0.018, recoil: 0.002, falloffStart: 40, falloffMin: 1, maxReserve: 120, pickupMag: 30 },
+  escopeta: { id: 'escopeta', name: 'Escopeta calibre 12', short: 'ESCOPETA', damage: 30, pellets: 8, interval: 0.85, auto: false, mag: 6, reload: 2.6, range: 18, spread: 0.06, recoil: 0, falloffStart: 5, falloffMin: 0.3, maxReserve: 24, pickupMag: 6 },
 };
 
 export const FLAMER = {
   id: 'lanca' as const,
-  name: 'Lança-chamas LC-3 “Fornalha”',
-  short: 'LC-3',
-  dps: 60,
+  name: 'Lança-chamas',
+  short: 'LANÇA-CHAMAS',
+  dps: 100,
   range: 6.5,
   coneCos: Math.cos((18 * Math.PI) / 180),
-  fuelPerSec: 12,
+  fuelPerSec: 10,
   maxFuel: 100,
-  startFuel: 0,
+  /** combustível que vem no tanque quando a arma é encontrada */
+  pickupFuel: 60,
   burnTime: 3,
-  burnDps: 12,
+  burnDps: 15,
 };
 
-export const WEAPON_NAMES: Record<WeaponId, string> = { pistola: GUNS.pistola.name, fuzil: GUNS.fuzil.name, lanca: FLAMER.name };
+export const WEAPON_NAMES: Record<WeaponId, string> = { pistola: GUNS.pistola.name, fuzil: GUNS.fuzil.name, escopeta: GUNS.escopeta.name, lanca: FLAMER.name };
 
-/** Vida da entidade escala com o número de sobreviventes. */
-export const ENTITY_HP_BASE = 600;
-export const ENTITY_HP_PER_SURVIVOR = 300;
-export const ENTITY_REGEN = 12; // por segundo
-export const ENTITY_REGEN_DELAY = 6; // segundos sem sofrer dano
+/** Quantas armas de cada tipo aparecem no mapa por partida (conforme o nº de sobreviventes). */
+export function weaponCounts(nSurv: number): Record<WeaponId, number> {
+  return {
+    pistola: Math.min(6, Math.max(2, Math.ceil(nSurv / 2) + 1)),
+    fuzil: nSurv >= 4 ? 2 : 1,
+    escopeta: nSurv >= 4 ? 2 : 1,
+    lanca: 1,
+  };
+}
+
+/** Vida da entidade (fixa; aumenta só com a melhoria "Vida máxima"). Ela NÃO se regenera sozinha. */
+export const ENTITY_HP_BASE = 1200;
+/** Ao chegar a 0 de vida (sem ser pelo fogo), a entidade cai e levanta com a vida cheia depois disto. */
+export const ENTITY_DOWN_TIME = 20;
 export const ENTITY_HITBOX = { radius: 0.55, height: 2.6 };
 
+// ---- Caixa Médica (uso ilimitado, para todos) ----
+/** segurar a interação por este tempo cura MEDBOX_HEAL × vida máxima; pode repetir na hora */
+export const MEDBOX_TIME = 1.5;
+export const MEDBOX_HEAL = 0.35;
+export const MEDBOX_RANGE = 2.2;
+
+// ---- Inventário ----
+/** limite de unidades por espaço; cada tipo de item ocupa um único espaço */
+export const ITEM_STACK: Record<ItemKind, number> = { kit: 2, fusivel: 2, documento: 2, amostra: 2, cartao: 1, detector: 1, sinalizador: 2 };
+
 // ---- Suprimentos no mapa ----
-export type SupplyKind = 'mun_pistola' | 'mun_fuzil' | 'combustivel';
+export type SupplyKind = 'mun_pistola' | 'mun_fuzil' | 'mun_escopeta' | 'combustivel';
 export const SUPPLY_INFO: Record<SupplyKind, { name: string; amount: number; weight: number; color: [number, number, number] }> = {
-  mun_pistola: { name: 'Munição de pistola', amount: 12, weight: 0.45, color: [0.95, 0.78, 0.25] },
-  mun_fuzil: { name: 'Munição de fuzil', amount: 30, weight: 0.35, color: [0.45, 0.85, 0.35] },
-  combustivel: { name: 'Combustível', amount: 35, weight: 0.2, color: [1, 0.3, 0.15] },
+  mun_pistola: { name: 'Munição de pistola', amount: 16, weight: 0.32, color: [0.95, 0.78, 0.25] },
+  mun_fuzil: { name: 'Munição de AK-47', amount: 30, weight: 0.26, color: [0.45, 0.85, 0.35] },
+  mun_escopeta: { name: 'Cartuchos de escopeta', amount: 6, weight: 0.24, color: [0.95, 0.35, 0.3] },
+  combustivel: { name: 'Combustível', amount: 40, weight: 0.18, color: [1, 0.55, 0.1] },
 };
 export const SUPPLY_COLLECT_TIME = 0.8; // canalização curta (animação de coleta)
 export const SUPPLY_RESPAWN = 90; // segundos para repor uma caixa coletada
 export const SUPPLY_RESPAWN_SAFE_DIST = 15; // não reaparece perto de sobreviventes
 /** Quantidade de caixas ativas ao mesmo tempo. */
-export const supplyCap = (nSurv: number) => 2 + nSurv;
+export const supplyCap = (nSurv: number) => 5 + nSurv;
 
 /** Portas automáticas (humanos): distância (m) do sensor até a borda do vão e atraso para fechar. */
 export const AUTO_DOOR_RANGE = 0.9;

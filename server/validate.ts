@@ -23,7 +23,6 @@ export const clientMsg = z.discriminatedUnion('t', [
   z.object({ t: z.literal('room:leave') }),
   z.object({ t: z.literal('room:list') }),
   z.object({ t: z.literal('room:ready'), ready: z.boolean() }),
-  z.object({ t: z.literal('room:pref'), pref: z.enum(['any', 'survivor', 'entity']) }),
   z.object({ t: z.literal('room:settings'), public: z.boolean().optional(), map: z.string().max(32).optional(), name: z.string().max(32).optional() }),
   z.object({ t: z.literal('room:start') }),
   z.object({ t: z.literal('room:kick'), id: z.string().max(64) }),

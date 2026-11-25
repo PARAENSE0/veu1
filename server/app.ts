@@ -22,6 +22,8 @@ export interface AppOptions {
   matchDuration?: number;
   countdown?: number;
   supplyRespawn?: number;
+  /** segundos que a entidade fica derrubada (padrão ENTITY_DOWN_TIME) */
+  entityDownTime?: number;
   log?: boolean;
   /** servidores STUN/TURN entregues ao cliente para a voz (WebRTC) */
   iceServers?: unknown[];
@@ -44,7 +46,11 @@ export async function createApp(o: AppOptions): Promise<App> {
   await store.init();
   const accounts = new Accounts(store);
   await accounts.seedCodes();
-  const rooms = new RoomManager(accounts, store, { matchDuration: o.matchDuration, countdown: o.countdown, supplyRespawn: o.supplyRespawn });
+  await accounts.archiveWeeks();
+  // virada da semana do ranking: confere a cada minuto (e em toda consulta)
+  const weekTimer = setInterval(() => void accounts.archiveWeeks().catch((e) => console.error('[ranking] erro ao arquivar semana', e)), 60_000);
+  weekTimer.unref();
+  const rooms = new RoomManager(accounts, store, { matchDuration: o.matchDuration, countdown: o.countdown, supplyRespawn: o.supplyRespawn, entityDownTime: o.entityDownTime });
   const server = createServer(makeHttpHandler({ accounts, rooms, publicDir: o.publicDir, trustProxy: !!o.trustProxy, allowedOrigins: o.allowedOrigins, assetLinks: o.assetLinks, adminToken: o.adminToken, iceServers: o.iceServers ?? [{ urls: 'stun:stun.l.google.com:19302' }] }));
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 64 * 1024 });
   const log = (...a: unknown[]) => o.log !== false && console.log(...a);
@@ -146,10 +152,6 @@ export async function createApp(o: AppOptions): Promise<App> {
           if (room.state !== 'lobby') return;
           me.ready = msg.ready;
           return room.broadcastState();
-        case 'room:pref':
-          if (room.state !== 'lobby') return;
-          me.pref = msg.pref;
-          return room.broadcastState();
         case 'room:settings':
           if (u.id !== room.hostId || room.state !== 'lobby') return err('room', 'Apenas o anfitrião altera a sala.');
           if (msg.public !== undefined) room.isPublic = msg.public;
@@ -220,6 +222,7 @@ export async function createApp(o: AppOptions): Promise<App> {
     store,
     async close() {
       rooms.stopLoop();
+      clearInterval(weekTimer);
       for (const c of wss.clients) c.terminate();
       await new Promise<void>((r) => wss.close(() => r()));
       await new Promise<void>((r) => server.close(() => r()));

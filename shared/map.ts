@@ -35,6 +35,8 @@ export const PROP = {
   TANK: 11,
   CABINET: 12,
   PILLAR: 13,
+  /** Caixa Médica: o móvel é desenhado pelo cliente (drawMedbox), não pelo cenário estático */
+  MEDBOX: 14,
 } as const;
 
 export type StationKind = 'gen' | 'analyzer' | 'archive' | 'secpanel' | 'comm' | 'tx' | 'pod';
@@ -126,6 +128,10 @@ export interface MapDef {
   entitySpawns: { x: number; z: number }[];
   /** área de fuga (em metros) de cada cápsula */
   exits: Record<string, Rect>;
+  /** pontos onde armas podem surgir (sorteados a cada partida) */
+  weaponSpots: { x: number; z: number; zone: string }[];
+  /** Caixa Médica de uso ilimitado (célula sólida baixa; interage-se pelo lado) */
+  medbox: { cx: number; cz: number; x: number; z: number; zone: string; facing: number };
   fogColor: [number, number, number];
 }
 
@@ -152,6 +158,9 @@ export class MapBuilder {
   private lights: LightDef[] = [];
   private itemSpots: { x: number; z: number; zone: string }[] = [];
   private supplySpots: { x: number; z: number; zone: string }[] = [];
+  private weaponCells: [number, number][] = [];
+  private extraSupplyCells: [number, number][] = [];
+  private medboxCell: [number, number] | null = null;
   private survivorSpawns: { x: number; z: number }[][] = [];
   private entitySpawns: { x: number; z: number }[] = [];
   private exits: Record<string, Rect> = {};
@@ -233,6 +242,34 @@ export class MapBuilder {
     this.supplySpots.push({ x: cc(cx), z: cc(cz), zone: '' });
     return this;
   }
+  /** ponto de arma (se a célula estiver ocupada, usa a livre mais próxima) */
+  weapon(cx: number, cz: number) {
+    this.weaponCells.push([cx, cz]);
+    return this;
+  }
+  /** ponto extra de suprimento com ajuste automático para célula livre */
+  supplyNear(cx: number, cz: number) {
+    this.extraSupplyCells.push([cx, cz]);
+    return this;
+  }
+  medbox(cx: number, cz: number) {
+    this.medboxCell = [cx, cz];
+    this.set(cx, cz, T.LOW, PROP.MEDBOX);
+    return this;
+  }
+  /** célula livre (piso) mais próxima, fora das listadas em 'taken' */
+  private snapFloor(cx: number, cz: number, taken: Set<string>): [number, number] {
+    for (let r = 0; r < 4; r++)
+      for (let dz = -r; dz <= r; dz++)
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const x = cx + dx;
+          const z = cz + dz;
+          if (this.get(x, z) === T.FLOOR && !taken.has(`${x},${z}`)) return [x, z];
+        }
+    throw new Error(`sem célula livre perto de ${cx},${cz}`);
+  }
+
   spawnGroup(list: [number, number][]) {
     this.survivorSpawns.push(list.map(([x, z]) => ({ x: cc(x), z: cc(z) })));
     return this;
@@ -301,6 +338,22 @@ export class MapBuilder {
     }
     for (const g of this.survivorSpawns)
       for (const p of g) if (this.get(Math.floor(p.x / CELL), Math.floor(p.z / CELL)) !== T.FLOOR) throw new Error(`spawn inválido ${p.x},${p.z}`);
+    // pontos novos (armas e suprimentos extras): ajustados para piso livre e sem repetir célula
+    const taken = new Set<string>([...this.supplySpots, ...this.itemSpots].map((s) => `${Math.floor(s.x / CELL)},${Math.floor(s.z / CELL)}`));
+    for (const [x0, z0] of this.extraSupplyCells) {
+      const [x, z] = this.snapFloor(x0, z0, taken);
+      taken.add(`${x},${z}`);
+      this.supplySpots.push({ x: cc(x), z: cc(z), zone: this.zoneAt(x, z) });
+    }
+    const weaponSpots: MapDef['weaponSpots'] = [];
+    for (const [x0, z0] of this.weaponCells) {
+      const [x, z] = this.snapFloor(x0, z0, taken);
+      taken.add(`${x},${z}`);
+      weaponSpots.push({ x: cc(x), z: cc(z), zone: this.zoneAt(x, z) });
+    }
+    if (!this.medboxCell) throw new Error('mapa sem Caixa Médica');
+    const [mbx, mbz] = this.medboxCell;
+    const medbox = { cx: mbx, cz: mbz, x: cc(mbx), z: cc(mbz), zone: this.zoneAt(mbx, mbz), facing: this.facingTo(mbx, mbz).yaw };
 
     // luzes automáticas: grade por zona + uma luz de emergência por zona
     for (const zn of this.zones) {
@@ -411,6 +464,8 @@ export class MapBuilder {
       survivorSpawns: this.survivorSpawns,
       entitySpawns: this.entitySpawns,
       exits: this.exits,
+      weaponSpots,
+      medbox,
       fogColor: this.fogColor,
     };
     validateConnectivity(def);
@@ -576,6 +631,38 @@ export function buildComplexoAbissal(): MapDef {
     [10, 20], [28, 18], [44, 19], [38, 9], [12, 4], [28, 4], // salas
   ];
   for (const [x, z] of supplies) b.supply(x, z);
+  // mais pontos de munição espalhados (salas e passagens), sem concentrar numa área
+  const moreSupplies: [number, number][] = [
+    [7, 2], [3, 7], // alojamentos
+    [18, 6], [26, 2], // refeitório
+    [40, 5], [34, 2], // enfermaria
+    [12, 12], [34, 12], // corredor norte
+    [4, 17], [8, 14], // energia
+    [19, 14], [25, 19], // controle
+    [36, 16], [40, 20], // laboratório
+    [8, 23], [38, 24], // corredor sul
+    [11, 31], [18, 26], // túneis
+    [27, 29], // contenção
+  ];
+  for (const [x, z] of moreSupplies) b.supplyNear(x, z);
+
+  // --- Pontos de armas: um ou dois por área (fora das docas) ---
+  const weaponSpots: [number, number][] = [
+    [8, 2], [2, 9], // alojamentos
+    [23, 3], [17, 8], // refeitório
+    [36, 7], [42, 2], // enfermaria
+    [20, 11], [40, 12], // corredor norte
+    [3, 20], [8, 16], // energia
+    [16, 20], [26, 14], // controle
+    [37, 19], [43, 15], // laboratório
+    [5, 24], [30, 23], // corredor sul
+    [10, 27], [19, 31], // túneis
+    [24, 27], [32, 31], // contenção
+  ];
+  for (const [x, z] of weaponSpots) b.weapon(x, z);
+
+  // --- Caixa Médica (uso ilimitado, humanos e entidade) na Enfermaria ---
+  b.medbox(38, 1);
 
   // --- Spawns ---
   b.spawnGroup([[19, 4], [20, 4], [21, 4], [19, 5], [20, 5], [21, 5], [20, 8], [21, 8]]);

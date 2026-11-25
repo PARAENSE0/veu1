@@ -8,6 +8,7 @@
  *   ALLOWED_ORIGINS lista separada por vírgula de origens aceitas no WebSocket
  *   ANDROID_ASSETLINKS conteúdo JSON do assetlinks.json gerado pelo PWABuilder
  *   ADMIN_TOKEN     senha para criar códigos de presente via POST /api/admin/codes
+ *   ENTITY_DOWN_TIME segundos que a entidade fica derrubada antes de levantar (padrão 20)
  *   ICE_SERVERS     JSON com servidores STUN/TURN para a voz, ex.:
  *                   [{"urls":"turn:turn.exemplo.com:3478","username":"u","credential":"s"}]
  */

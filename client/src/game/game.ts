@@ -7,7 +7,7 @@
  * - Jogadores remotos são interpolados ~110 ms no passado.
  * - Nada é decidido aqui: ações são enviadas como intenção ao servidor.
  */
-import { ABILITIES, AUTO_DOOR_RANGE, CELL, DT, FLAMER, GUNS, SUPPLY_INFO, WEAPON_ORDER, type SupplyKind, type WeaponId, ENT, ENTITY_AUDIBLE_RADIUS, EYE_HEIGHT, CROUCH_EYE, DOWNED_EYE, ENTITY_EYE, INTERACT_RANGE, INTERP_DELAY_MS, ITEM_INFO, PLAYER_RADIUS, SURV, WALL_H, type AbilityId } from '../../../shared/constants';
+import { ABILITIES, AUTO_DOOR_RANGE, WEAPON_NAMES, CELL, DT, FLAMER, GUNS, SUPPLY_INFO, WEAPON_ORDER, type SupplyKind, type WeaponId, ENT, ENTITY_AUDIBLE_RADIUS, EYE_HEIGHT, CROUCH_EYE, DOWNED_EYE, ENTITY_EYE, INTERACT_RANGE, INTERP_DELAY_MS, ITEM_INFO, PLAYER_RADIUS, SURV, WALL_H, type AbilityId } from '../../../shared/constants';
 import { getMap, type MapDef } from '../../../shared/map';
 import { BTN, isOpaque, isSolid, lineOfSight, makeGrid, pickTarget, raycast, stepMove, type Grid, type InputCmd, type MoveParams, type MoveState } from '../../../shared/physics';
 import { resolveAppearance, type Appearance, type Loadout } from '../../../shared/progression';
@@ -18,7 +18,7 @@ import { audio } from './audio';
 import { HudStore, type FeedLine } from './hudstore';
 import { Input } from './input';
 import { clamp, lerp, lerpAngle, mat4, rotX, rotY, scale, translate, identity } from './math';
-import { drawEntity, drawSupply, drawSurvivor, drawWeapon } from './models';
+import { drawEntity, drawGroundWeapon, drawMedbox, drawSupply, drawSurvivor, drawWeapon } from './models';
 import { aimAssist, aimParams, type AimLevel } from './aim';
 import { Renderer, type Mesh, type PointLight, type SpotLight } from './renderer';
 import { LAYER } from './textures';
@@ -57,10 +57,13 @@ interface Remote {
   abilityAt: Partial<Record<AbilityId, number>>;
   hitAt: number;
   deathAt: number;
+  downAt: number;
+  upAt: number;
 }
 
-function weaponOf(f: number): WeaponId {
-  return f & PF.WPN_FLAME ? 'lanca' : f & PF.WPN_RIFLE ? 'fuzil' : 'pistola';
+function weaponOf(f: number): WeaponId | undefined {
+  if (f & PF.UNARMED) return undefined;
+  return f & PF.WPN_FLAME ? 'lanca' : f & PF.WPN_RIFLE ? 'fuzil' : f & PF.WPN_SHOTGUN ? 'escopeta' : 'pistola';
 }
 
 const ECO_ORDER: EcoType[] = ['passos', 'porta', 'radio', 'alarme', 'presenca'];
@@ -178,7 +181,7 @@ export class GameClient {
   }
 
   private newRemote(id: string, name: string, role: 'survivor' | 'entity', loadout: Loadout): Remote {
-    return { id, name, role, ap: resolveAppearance(loadout), buf: [], visible: false, x: 0, z: 0, yaw: 0, pitch: 0, f: 0, spd: 0, phase: 0, stepAcc: 0, lastX: 0, lastZ: 0, attackAt: -9, abilityAt: {}, hitAt: -9, deathAt: -9 };
+    return { id, name, role, ap: resolveAppearance(loadout), buf: [], visible: false, x: 0, z: 0, yaw: 0, pitch: 0, f: 0, spd: 0, phase: 0, stepAcc: 0, lastX: 0, lastZ: 0, attackAt: -9, abilityAt: {}, hitAt: -9, deathAt: -9, downAt: -9, upAt: -9 };
   }
 
   get role() {
@@ -327,9 +330,11 @@ export class GameClient {
           ox = this.pred.x - Math.sin(this.yaw) * cp * 0.6 + Math.cos(this.yaw) * 0.18;
           oz = this.pred.z - Math.cos(this.yaw) * cp * 0.6 - Math.sin(this.yaw) * 0.18;
           oy = e.y - 0.05;
-          this.recoil = e.w === 'pistola' ? 1 : 0.6;
+          this.recoil = e.w === 'escopeta' ? 1.6 : e.w === 'pistola' ? 1 : 0.6;
         }
         this.tracers.push({ x: ox, y: oy, z: oz, tx: e.tx, ty: e.ty, tz: e.tz, t: this.time });
+        // escopeta: um rastro por chumbo
+        for (const [px, py, pz] of e.pel ?? []) this.tracers.push({ x: ox, y: oy, z: oz, tx: px, ty: py, tz: pz, t: this.time });
         this.muzzles.push({ x: ox, y: oy, z: oz, t: this.time });
         if (!e.hit) this.burst(e.tx, e.ty, e.tz, 5, [0.8, 0.75, 0.6], 2);
         break;
@@ -344,6 +349,25 @@ export class GameClient {
       }
       case 'supply':
         this.burst(e.x, 0.4, e.z, 14, SUPPLY_INFO[e.kind].color, 2.5);
+        break;
+      case 'entdown':
+        this.shake = 0.6;
+        for (let i = 0; i < 3; i++) this.burst(e.x + (Math.random() - 0.5), 1 + Math.random(), e.z + (Math.random() - 0.5), 14, [0.7, 0.05, 0.05], 3);
+        this.feedLine(this.role === 'entity' ? `Você foi derrubada! Levanta em ${Math.round(e.until)} s.` : `${this.nameOf(e.by)} derrubou a entidade! Ela levanta em ${Math.round(e.until)} s — só o fogo a mata de vez.`, this.role === 'entity' ? 'bad' : 'good');
+        for (const rm of this.remotes.values()) if (rm.role === 'entity') rm.downAt = this.time;
+        if (this.role === 'entity') this.myDownAt = this.time;
+        break;
+      case 'entup':
+        this.feedLine(this.role === 'entity' ? 'Você se levantou com a vida cheia.' : 'A entidade se levantou com a vida cheia!', this.role === 'entity' ? 'good' : 'bad');
+        for (const rm of this.remotes.values()) if (rm.role === 'entity') rm.upAt = this.time;
+        if (this.role === 'entity') this.myUpAt = this.time;
+        break;
+      case 'medbox':
+        this.burst(e.x, 1, e.z, 12, [1, 0.2, 0.2], 2);
+        if (e.id === this.intro.you) this.feedLine(`Caixa Médica: +${e.hp} de vida.`, 'good');
+        break;
+      case 'wpickup':
+        if (e.by === this.intro.you) audio.ui('ok');
         break;
       case 'entdeath':
         for (const rm of this.remotes.values()) if (rm.role === 'entity') rm.deathAt = this.time;
@@ -427,6 +451,8 @@ export class GameClient {
   private myAbilityAt: Partial<Record<AbilityId, number>> = {};
   private myHitAt = -9;
   private myDeathAt = -9;
+  private myDownAt = -9;
+  private myUpAt = -9;
 
   // ------------------------------------------------------------------ entrada / predição
   /**
@@ -529,7 +555,7 @@ export class GameClient {
         this.inventoryOpen = !this.inventoryOpen;
         if (this.inventoryOpen) inp.unlock();
       }
-      (['item1', 'item2', 'item3', 'item4'] as const).forEach((a, i) => {
+      (['item1', 'item2', 'item3', 'item4', 'item5'] as const).forEach((a, i) => {
         if (inp.pressed(a)) send({ t: 'act', a: 'use', slot: i });
       });
     } else {
@@ -554,9 +580,16 @@ export class GameClient {
 
   /** Troca para a próxima/anterior arma (o servidor confirma pelo snapshot). */
   cycleWeapon(dir: number) {
-    const cur = this.snap?.you.wpn?.sel ?? 'pistola';
-    const i = WEAPON_ORDER.indexOf(cur);
-    this.selectWeapon((i + dir + WEAPON_ORDER.length) % WEAPON_ORDER.length);
+    const w = this.snap?.you.wpn;
+    if (!w || !w.own.length) {
+      this.feedLine('Você ainda não tem armas — procure pelo complexo.', 'warn');
+      return;
+    }
+    // só circula entre as armas que o jogador já encontrou
+    const owned = WEAPON_ORDER.filter((x) => w.own.includes(x));
+    const i = w.sel ? owned.indexOf(w.sel) : -1;
+    const next = owned[(i + dir + owned.length) % owned.length];
+    this.selectWeapon(WEAPON_ORDER.indexOf(next));
   }
   selectWeapon(slot: number) {
     this.net.send({ t: 'act', a: 'weapon', slot });
@@ -635,6 +668,7 @@ export class GameClient {
       stations: this.map.stations.filter((st) => stations.has(st.id)),
       pods: snap?.pods ?? [],
       detector: this.detectorMark && this.detectorMark.until > this.time ? this.detectorMark : null,
+      zone: this.zoneAt(),
     };
   }
   /** Tecla M: ampliar/reduzir (lida pela interface). */
@@ -651,6 +685,7 @@ export class GameClient {
     const eyeY = this.pred.crouch ? CROUCH_EYE : EYE_HEIGHT;
     const eye = { x: this.pred.x + this.smoothX, y: eyeY, z: this.pred.z + this.smoothZ };
     const sel = you.wpn.sel;
+    if (!sel) return (this.aimEngaged = false), none;
     const range = sel === 'lanca' ? FLAMER.range : GUNS[sel].range;
     const target = ent ? { x: ent.x, y: 1.45, z: ent.z, radius: 0.55 } : null;
     const visible = !!target && lineOfSight(this.grid, eye.x, eye.z, target.x, target.z);
@@ -1038,8 +1073,11 @@ export class GameClient {
     this.drawOverlay(cam);
   }
 
-  private entityPose(rm: { x: number; z: number; yaw: number; pitch: number; spd: number; phase: number; f: number; attackAt: number; abilityAt: Partial<Record<AbilityId, number>>; hitAt?: number; deathAt?: number }) {
+  private entityPose(rm: { x: number; z: number; yaw: number; pitch: number; spd: number; phase: number; f: number; attackAt: number; abilityAt: Partial<Record<AbilityId, number>>; hitAt?: number; deathAt?: number; downAt?: number; upAt?: number }) {
     const since = (t?: number) => (t === undefined ? 99 : this.time - t);
+    // derrubada: cai em 1 s; ao levantar, a queda "volta" em 1 s (animação de recuperação)
+    const down = !!(rm.f & PF.DOWNED);
+    const fall = down ? Math.min(1, since(rm.downAt) / 1.0) : since(rm.upAt) < 1.0 ? 1 - since(rm.upAt) / 1.0 : 0;
     const sp = since(rm.abilityAt.golpe);
     const special = sp < ENT.specialWindup ? sp / ENT.specialWindup : sp < ENT.specialWindup + 0.3 ? 1 + (sp - ENT.specialWindup) / 0.3 : 0;
     const atk = special > 0 ? 99 : since(rm.attackAt);
@@ -1059,7 +1097,7 @@ export class GameClient {
       parasite: Math.max(0, 1 - since(rm.abilityAt.parasita) / 2),
       special,
       hit: Math.max(0, 1 - since(rm.hitAt) / 0.35),
-      death: rm.deathAt !== undefined && rm.deathAt > 0 ? Math.min(1, since(rm.deathAt) / 1.2) : 0,
+      death: rm.deathAt !== undefined && rm.deathAt > 0 ? Math.min(1, since(rm.deathAt) / 1.2) : fall,
     };
   }
 
@@ -1071,9 +1109,9 @@ export class GameClient {
     this.myPhase += this.pred.speed * 0.016 * (this.role === 'entity' ? 2.4 : 3.6);
     if (this.role === 'survivor') {
       const mf = this.myFlags();
-      drawSurvivor(this.renderer, this.myAp, { x, z, yaw: this.yaw, pitch: this.pitch, speed: this.pred.speed, phase: this.myPhase, crouch: this.pred.crouch, downed: you.st === 'downed', channel: !!you.ch, flash: you.flash, time: this.time, weapon: you.wpn?.sel, firing: !!(mf & PF.FIRE), reloading: (you.wpn?.reload ?? 0) > 0, collecting: !!(mf & PF.COLLECT), hit: Math.max(0, 1 - (this.time - this.myHitAt) / 0.35) }, { alpha: 1, emit: [0, 0, 0] });
+      drawSurvivor(this.renderer, this.myAp, { x, z, yaw: this.yaw, pitch: this.pitch, speed: this.pred.speed, phase: this.myPhase, crouch: this.pred.crouch, downed: you.st === 'downed', channel: !!you.ch, flash: you.flash, time: this.time, weapon: you.wpn?.sel ?? undefined, firing: !!(mf & PF.FIRE), reloading: (you.wpn?.reload ?? 0) > 0, collecting: !!(mf & PF.COLLECT), hit: Math.max(0, 1 - (this.time - this.myHitAt) / 0.35) }, { alpha: 1, emit: [0, 0, 0] });
     } else {
-      const pose = this.entityPose({ x, z, yaw: this.yaw, pitch: this.pitch, spd: this.pred.speed, phase: this.myPhase, f: (this.pred.crouch ? PF.CROUCH : 0) | ((you.act?.ruptura ?? 0) > 0 ? PF.DASH : 0), attackAt: this.myAttackAt, abilityAt: this.myAbilityAt, hitAt: this.myHitAt, deathAt: this.myDeathAt });
+      const pose = this.entityPose({ x, z, yaw: this.yaw, pitch: this.pitch, spd: this.pred.speed, phase: this.myPhase, f: (this.pred.crouch ? PF.CROUCH : 0) | ((you.act?.ruptura ?? 0) > 0 ? PF.DASH : 0) | ((this.snap?.eh[2] ?? 0) > 0 ? PF.DOWNED : 0), attackAt: this.myAttackAt, abilityAt: this.myAbilityAt, hitAt: this.myHitAt, deathAt: this.myDeathAt, downAt: this.myDownAt, upAt: this.myUpAt });
       if (you.camo) {
         this.renderer.transparent(true);
         drawEntity(this.renderer, this.myAp.entBody, this.myAp.entGlow, pose, { alpha: 0.3, emit: [0, 0, 0] });
@@ -1092,7 +1130,7 @@ export class GameClient {
     const w = this.snap?.you.wpn;
     const info = SUPPLY_INFO[kind];
     let full = false;
-    if (w) full = kind === 'mun_pistola' ? w.res.pistola >= GUNS.pistola.maxReserve : kind === 'mun_fuzil' ? w.res.fuzil >= GUNS.fuzil.maxReserve : w.fuel >= FLAMER.maxFuel;
+    if (w) full = kind === 'mun_pistola' ? w.res.pistola >= GUNS.pistola.maxReserve : kind === 'mun_fuzil' ? w.res.fuzil >= GUNS.fuzil.maxReserve : kind === 'mun_escopeta' ? w.res.escopeta >= GUNS.escopeta.maxReserve : w.fuel >= FLAMER.maxFuel;
     return full ? `${info.name}: você está no limite` : `Coletar ${info.name.toLowerCase()} (+${info.amount})`;
   }
 
@@ -1138,7 +1176,8 @@ export class GameClient {
   /** Arma em primeira pessoa (desenhada por cima do cenário para não atravessar paredes). */
   private drawViewModel(cam: { x: number; y: number; z: number; third: boolean }) {
     const you = this.snap?.you;
-    if (!you?.wpn || cam.third || this.role !== 'survivor' || this.spectating() || you.hidden || you.st !== 'alive') return;
+    if (!you?.wpn?.sel || cam.third || this.role !== 'survivor' || this.spectating() || you.hidden || you.st !== 'alive') return;
+    const sel = you.wpn.sel;
     const r = this.renderer;
     r.clearDepth();
     const M = mat4();
@@ -1154,8 +1193,18 @@ export class GameClient {
     rotX(M, this.recoil * 0.12 - (reloading ? 0.5 : 0) - (lowered ? 0.4 : 0));
     scale(M, 0.55, 0.55, 0.55);
     const f = this.myFlags();
-    drawWeapon(r, M, you.wpn.sel, { alpha: 1, emit: [0.05, 0.05, 0.05] }, !!(f & PF.FIRE) && you.wpn.sel !== 'lanca' && this.recoil > 0.5, this.time);
+    // animação de sacar: a arma sobe nos primeiros 0,35 s depois de trocar
+    if (this.equipWeapon !== sel) {
+      this.equipWeapon = sel;
+      this.equipAt = this.time;
+    }
+    const eq = Math.min(1, (this.time - this.equipAt) / 0.35);
+    translate(M, 0, -(1 - eq) * 0.25, 0);
+    rotX(M, -(1 - eq) * 0.8);
+    drawWeapon(r, M, sel, { alpha: 1, emit: [0.05, 0.05, 0.05] }, !!(f & PF.FIRE) && sel !== 'lanca' && this.recoil > 0.5, this.time);
   }
+  private equipWeapon: WeaponId | null = null;
+  private equipAt = -9;
 
   private drawDynamicWorld(dt: number, cam: { x: number; z: number }) {
     const r = this.renderer;
@@ -1245,6 +1294,20 @@ export class GameClient {
       scale(M, L.emergency ? 0.25 : 1.1, 0.08, L.emergency ? 0.25 : 0.3);
       const c = L.color;
       r.draw(r.cube, M, { layer: LAYER.LAMP, tint: on ? [c[0], c[1], c[2]] : [0.15, 0.15, 0.15], emit: [c[0] * k * 0.6, c[1] * k * 0.6, c[2] * k * 0.6], unlit: on ? 1 : 0 });
+    }
+    // armas no chão
+    for (const [, w, x, z] of snap?.gw ?? []) {
+      if (!near(x, z, 34)) continue;
+      drawGroundWeapon(r, w, x, z, this.time, { alpha: 1, emit: [0.04, 0.04, 0.04] });
+    }
+    // Caixa Médica
+    {
+      const mb = this.map.medbox;
+      if (near(mb.x, mb.z, 40)) {
+        let active = !!(this.myFlags() & PF.MEDBOX);
+        for (const rm of this.remotes.values()) if (rm.visible && rm.f & PF.MEDBOX) active = true;
+        drawMedbox(r, mb.x, mb.z, mb.facing, this.time, active, { alpha: 1, emit: [0, 0, 0] });
+      }
     }
     // caixas de munição e combustível
     for (const [, kind, x, z, claimed] of snap?.sup ?? []) {
@@ -1430,6 +1493,11 @@ export class GameClient {
       }
       for (const [, kind, ix, iz] of snap.items) cands.push({ x: ix, z: iz, prio: 0.6, text: `Pegar: ${ITEM_INFO[kind].name}` });
       for (const [, kind, sx, sz, claimed] of snap.sup) cands.push({ x: sx, z: sz, prio: 0.7, text: claimed ? 'Alguém já está coletando' : this.supplyPrompt(kind) });
+      for (const [, w, wx, wz] of snap.gw) cands.push({ x: wx, z: wz, prio: 0.9, text: you.wpn?.own.includes(w) ? `${WEAPON_NAMES[w]} (você já tem)` : `Pegar arma: ${WEAPON_NAMES[w]}` });
+      {
+        const mb = this.map.medbox;
+        cands.push({ x: mb.x, z: mb.z, half: 1, prio: 0.75, text: you.hp >= you.maxHp ? 'Caixa Médica (vida cheia)' : 'Caixa Médica: segure para curar 35%' });
+      }
       for (const rm of this.remotes.values()) if (rm.visible && rm.role === 'survivor' && rm.f & PF.DOWNED) cands.push({ x: rm.x, z: rm.z, prio: 1.2, text: `Resgatar ${rm.name} (segure)` });
       const locked = new Set(snap.locked);
       // portas abrem sozinhas para humanos; só avisamos quando estão travadas
@@ -1442,7 +1510,7 @@ export class GameClient {
           const st = this.map.stations.find((s) => s.id === sid)!;
           let text = '';
           if (t.item) {
-            const has = you.inv.includes(t.item);
+            const has = you.inv.some((sl) => sl?.k === t.item);
             text = has ? `Entregar: ${ITEM_INFO[t.item].name}` : `Precisa de ${ITEM_INFO[t.item].name} (${t.count}/${t.required})`;
           } else text = `${st.label} (segure)`;
           if (snap.jam.includes(sid)) text += ' — INTERFERÊNCIA';
@@ -1454,20 +1522,28 @@ export class GameClient {
     } else {
       for (const d of this.map.doors) if (!d.secure) cands.push({ x: d.x, z: d.z, half: 1, prio: 0, text: this.grid.doorOpen[d.idx] ? 'Fechar porta' : 'Abrir porta' });
       for (const l of this.map.lockers) cands.push({ x: l.x, z: l.z, half: 1, prio: 0.2, text: 'Vasculhar armário' });
+      {
+        const mb = this.map.medbox;
+        cands.push({ x: mb.x, z: mb.z, half: 1, prio: 0.5, text: you.hp >= you.maxHp ? 'Caixa Médica (vida cheia)' : 'Caixa Médica: segure para curar 35%' });
+      }
       const tgt = pickTarget(x, z, this.yaw, INTERACT_RANGE + 0.3, cands);
       this.prompt = tgt?.text ?? null;
     }
   }
 
   private zoneName(): string {
+    return this.zoneAt()?.name ?? 'Passagem';
+  }
+  /** Área (sala/corredor) onde o jogador está agora. */
+  zoneAt() {
     const p = this.myPos();
     const cx = Math.floor(p.x / CELL);
     const cz = Math.floor(p.z / CELL);
     for (let i = this.map.zones.length - 1; i >= 0; i--) {
       const zn = this.map.zones[i];
-      if (cx >= zn.x0 && cx <= zn.x1 && cz >= zn.z0 && cz <= zn.z1) return zn.name;
+      if (cx >= zn.x0 && cx <= zn.x1 && cz >= zn.z0 && cz <= zn.z1) return zn;
     }
-    return 'Passagem';
+    return null;
   }
 
   private pushHud() {
@@ -1485,6 +1561,8 @@ export class GameClient {
       staminaMax: this.intro.mods?.staminaMax ?? SURV.staminaMax,
       exhausted: this.pred.exhausted,
       inv: you.inv,
+      maxHp: you.maxHp,
+      entDown: snap.eh[2],
       wpn: you.wpn ?? null,
       entHp: snap.eh,
       hit: this.time - this.hitT < 0.2,

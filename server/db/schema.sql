@@ -70,12 +70,11 @@ CREATE INDEX IF NOT EXISTS match_players_user_idx ON match_players(user_id);
 -- nível é derivado de total_xp (teto do nível 50 = 98.000 XP, ver shared/progression.ts)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE users DROP CONSTRAINT IF EXISTS users_total_xp_cap;
-ALTER TABLE users ADD CONSTRAINT users_total_xp_cap CHECK (total_xp >= 0 AND total_xp <= 98000);
 
 -- melhorias permanentes (níveis 0..5)
 CREATE TABLE IF NOT EXISTS upgrades (
   user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  upgrade_id  TEXT NOT NULL CHECK (upgrade_id IN ('estamina','recuperacao','velocidade','resistencia','interacao','m_velocidade','m_resistencia','m_ataque','m_recarga','m_eficiencia')),
+  upgrade_id  TEXT NOT NULL,
   level       SMALLINT NOT NULL CHECK (level BETWEEN 0 AND 5),
   PRIMARY KEY (user_id, upgrade_id)
 );
@@ -142,3 +141,38 @@ CREATE TABLE IF NOT EXISTS rewarded_matches (
 
 -- ranking: índices para ordenar por XP
 CREATE INDEX IF NOT EXISTS users_rank_xp_idx ON users(total_xp DESC, created_at);
+
+-- ------------------------------------------------------------------ v0.3: XP sem teto, ranking semanal, novas melhorias e códigos
+-- XP e moedas sem limite artificial (BIGINT: até 9,2 × 10^18); o nível continua parando no 50 (calculado no servidor)
+ALTER TABLE users ALTER COLUMN total_xp TYPE BIGINT;
+ALTER TABLE users ALTER COLUMN coins TYPE BIGINT;
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_total_xp_nonneg;
+ALTER TABLE users ADD CONSTRAINT users_total_xp_nonneg CHECK (total_xp >= 0);
+
+ALTER TABLE upgrades DROP CONSTRAINT IF EXISTS upgrades_upgrade_id_check;
+ALTER TABLE upgrades ADD CONSTRAINT upgrades_upgrade_id_check CHECK (upgrade_id IN ('vida','dano','estamina','recuperacao','velocidade','resistencia','interacao','m_vida','m_velocidade','m_resistencia','m_ataque','m_recarga','m_eficiencia'));
+
+ALTER TABLE gift_codes ALTER COLUMN reward_coins TYPE BIGINT;
+INSERT INTO gift_codes (code, reward_coins) VALUES ('1MPARAENSE', 1000000) ON CONFLICT (code) DO NOTHING;
+INSERT INTO gift_codes (code, reward_coins) VALUES ('2MPARAENSE', 2000000) ON CONFLICT (code) DO NOTHING;
+ALTER TABLE reward_log ALTER COLUMN xp TYPE BIGINT;
+ALTER TABLE reward_log ALTER COLUMN coins TYPE BIGINT;
+
+-- pontuação da semana (zera por data: a semana começa segunda 00:00 de Brasília)
+CREATE TABLE IF NOT EXISTS week_scores (
+  user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  week_id   DATE NOT NULL,
+  xp        BIGINT NOT NULL DEFAULT 0 CHECK (xp >= 0),
+  wins      INTEGER NOT NULL DEFAULT 0 CHECK (wins >= 0),
+  PRIMARY KEY (user_id, week_id)
+);
+CREATE INDEX IF NOT EXISTS week_scores_rank_idx ON week_scores(week_id, xp DESC);
+
+-- semanas encerradas (pódio arquivado)
+CREATE TABLE IF NOT EXISTS week_history (
+  week_id    DATE PRIMARY KEY,
+  starts_at  TIMESTAMPTZ NOT NULL,
+  ends_at    TIMESTAMPTZ NOT NULL,
+  players    INTEGER NOT NULL,
+  top        JSONB NOT NULL
+);

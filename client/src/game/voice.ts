@@ -45,6 +45,11 @@ export class Voice {
   private listeners = new Set<() => void>();
   private buf = new Uint8Array(512);
   private peerKey = '';
+  /** Sinais (oferta/candidatos) que chegaram antes de a sala liberar aquele jogador:
+   *  guardados por alguns segundos e reaplicados quando ele entra na lista. Sem isso,
+   *  a primeira oferta podia se perder e a conexão ficava parada em "new". */
+  private early = new Map<string, { at: number; data: { desc?: RTCSessionDescriptionInit; cand?: RTCIceCandidateInit } }[]>();
+  private signalChain: Promise<void> = Promise.resolve();
 
   /** Espectadores (eliminados) ouvem todos os sobreviventes sem atenuação. */
   setSpectator(on: boolean) {
@@ -56,7 +61,7 @@ export class Voice {
     private myId: string,
   ) {
     this.unsub = net.on((m) => {
-      if (m.t === 'rtc') void this.onSignal(m.from, m.data as { desc?: RTCSessionDescriptionInit; cand?: RTCIceCandidateInit });
+      if (m.t === 'rtc') this.queueSignal(m.from, m.data as { desc?: RTCSessionDescriptionInit; cand?: RTCIceCandidateInit });
     });
     fetch(apiUrl('/api/config'))
       .then((r) => r.json())
@@ -87,7 +92,24 @@ export class Voice {
     this.allowed = new Set(ids.filter((i) => i !== this.myId));
     for (const id of [...this.peers.keys()]) if (!this.allowed.has(id)) this.closePeer(id);
     for (const id of this.allowed) if (!this.peers.has(id)) this.createPeer(id);
+    const now = performance.now();
+    for (const [id, list] of [...this.early]) {
+      this.early.delete(id);
+      if (!this.allowed.has(id)) continue;
+      for (const e of list) if (now - e.at < 10_000) this.queueSignal(id, e.data);
+    }
     this.emit();
+  }
+
+  /** Processa os sinais em ordem (oferta antes dos candidatos), um por vez. */
+  private queueSignal(from: string, data: { desc?: RTCSessionDescriptionInit; cand?: RTCIceCandidateInit }) {
+    if (!this.allowed.has(from)) {
+      const list = this.early.get(from) ?? [];
+      if (list.length < 60) list.push({ at: performance.now(), data });
+      this.early.set(from, list);
+      return;
+    }
+    this.signalChain = this.signalChain.then(() => this.onSignal(from, data));
   }
 
   private createPeer(id: string): Peer {
@@ -302,6 +324,7 @@ export class Voice {
 
   dispose() {
     for (const id of [...this.peers.keys()]) this.closePeer(id);
+    this.early.clear();
     this.disableMic();
     this.unsub();
   }

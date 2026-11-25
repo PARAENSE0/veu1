@@ -8,7 +8,7 @@ Em 2041, o consórcio Abissal mantinha laboratórios em lugares onde ninguém ou
 
 ## 2. Regras da partida [implementado]
 
-- 2 a 9 jogadores: 1 entidade e até 8 sobreviventes. O servidor sorteia a entidade entre quem a prefere (depois "qualquer"), priorizando quem foi entidade menos vezes na sala.
+- 2 a 9 jogadores: 1 entidade e até 8 sobreviventes. **Ninguém escolhe a função**: o servidor sorteia a entidade entre os jogadores conectados que foram entidade menos vezes na sala (sorteio justo: com 9 jogadores e 27 partidas, cada um é entidade 3 vezes). Todos veem a apresentação "Você é a Entidade / Você é humano" no início (v0.3).
 - Duração máxima: 15 min. Ao esgotar, o complexo colapsa e todos os sobreviventes restantes morrem.
 - **Vitória dos sobreviventes**: pelo menos metade (arredondada para cima) escapa. Caso contrário vence a entidade. Se a entidade abandonar ou ficar desconectada por 60 s, os sobreviventes vencem.
 - Fases de objetivos (sorteadas a cada partida, inclusive locais dos itens e quais estações ficam ativas):
@@ -27,7 +27,8 @@ Em 2041, o consórcio Abissal mantinha laboratórios em lugares onde ninguém ou
 | Fôlego | 100; correr gasta 21/s; recupera 15/s após 1 s; ao zerar fica exausto até 30 |
 | Caído | sangra por 60 s (pausa enquanto alguém resgata); resgate de 4 s volta com 40 de vida |
 | Adrenalina | +30% de velocidade por 2 s após ser atingido |
-| Inventário | 4 espaços |
+| Vida | 100 (até 140 com a melhoria "Vida") |
+| Inventário | 5 espaços; kit, fusível, documento e amostra empilham até 2 no mesmo espaço (v0.3) |
 
 Itens de apoio sorteados no mapa: **Kit médico** (cura 50 em 4 s, imóvel), **Detector de ressonância** (3 cargas; mostra a posição aproximada da entidade a ±5 m a todos os sobreviventes, interrompe a camuflagem por 3 s e marca ecos falsos num raio de 18 m), **Sinalizador** (luz por 25 s; anula a camuflagem a até 7 m).
 
@@ -37,30 +38,25 @@ Ruído percebido pela entidade (através das paredes, com imprecisão): correr (
 
 Espectador: ao morrer ou fugir, a câmera segue os sobreviventes vivos (clique alterna).
 
-## 3.1 Armas e suprimentos [implementado]
+## 3.1 Armas e suprimentos [implementado — revisado na v0.3]
 
-Todo sobrevivente carrega três armas (nomes originais). Todo disparo, dano, recarga e coleta é decidido pelo servidor.
+**Ninguém começa armado.** As armas ficam no chão em 20 pontos de arma (2 por sala, fora das docas), sorteados a cada partida, espalhando primeiro as mais raras em salas diferentes. Pegar: olhar para a arma e apertar E. Cada jogador tem no máximo uma de cada tipo; a arma é removida do mapa no mesmo tick (dois jogadores nunca pegam a mesma). Ao morrer, as armas caem no chão com o que tinham no pente/tanque.
 
-| Arma | Dano | Cadência | Pente | Recarga | Alcance | Reserva máx. | Começa com |
+| Arma | Dano | Cadência | Pente | Recarga | Alcance | Reserva máx. | No mapa (por partida) |
 |---|---|---|---|---|---|---|---|
-| Pistola P-50 "Âncora" | 40 por tiro | 1 a cada 0,38 s (semiautomática) | 8 | 1,5 s | 32 m | 32 | 8 + 8 |
-| Fuzil FR-9 "Maré" | 15 por tiro | 10/s (automático) | 30 | 2,3 s | 40 m | 90 | vazio |
-| Lança-chamas LC-3 "Fornalha" | 60/s + queimadura 12/s por 3 s | contínuo | — | — | 6,5 m, cone de 36° | 100 de combustível | vazio |
+| Pistola P-50 | 50 | 0,38 s (semi) | 8 | 1,5 s | 32 m | 40 | 2 a 6 (cresce com os jogadores) |
+| AK-47 | 40 | 10/s (automática, dispersão cresce no tiro contínuo) | 30 | 2,4 s | 40 m | 120 | 1 (2 com 4+ humanos) |
+| Escopeta calibre 12 | 8 chumbos × 30 (cheio até 5 m, cai até 30% em 18 m) | 0,85 s | 6 cartuchos | 2,6 s | 18 m | 24 | 1 (2 com 4+ humanos) |
+| Lança-chamas | 100/s + queimadura 15/s por 3 s | contínuo, 10 de combustível/s | tanque 100 (vem com 60) | — | 6,5 m, cone de 36° | — | 1 |
 
-- Tiros são instantâneos, calculados no servidor contra o corpo da entidade (cilindro de 0,55 m × 2,6 m), com desvio aleatório; paredes, portas fechadas, chão e teto bloqueiam.
-- Não é possível atirar correndo, escondido, caído, curando ou coletando. Atirar interrompe a operação de consoles.
-- **Cada disparo faz barulho**: a entidade recebe um sinal de ruído, então atirar revela a posição.
-- O lança-chamas usa só combustível; não compartilha munição com as outras armas.
-- Pente vazio recarrega sozinho se houver reserva; sem nada, a arma dá um clique vazio.
+Balanceamento contra a entidade (1.200 de vida, verificado por simulação em `tests/sim-balance.ts`): pistola ≈ 3 pentes (24 tiros); AK-47 ≈ 1 pente (30 tiros; 24 com "Poder de fogo" máximo); escopeta de perto 5 tiros (4 com "Poder de fogo" máximo); de 10 m cada tiro tira ≈ 158 e de 16 m ≈ 39.
 
-**Entidade destrutível.** Integridade = 600 + 300 por sobrevivente (900 com 1, 1.800 com 4, 3.000 com 8). Regenera 12/s depois de 6 s sem sofrer dano (queimadura conta como dano). Ser atingida quebra a camuflagem. Se chegar a zero, **os sobreviventes vencem** — quem deu o golpe final ganha +500 pontos e todos os sobreviventes vivos +200; cada 10 de dano vale 1 ponto.
+- Tiros são instantâneos, calculados no servidor contra o corpo da entidade (cilindro de 0,55 m × 2,6 m); cada chumbo é traçado separadamente; paredes, portas fechadas, chão e teto bloqueiam. Não há tiro sem munição nem dano duplicado.
+- Não é possível atirar correndo, escondido, caído, curando ou coletando. Cada disparo faz barulho para a entidade.
 
-**Suprimentos.** Caixas de munição de pistola (+12), de fuzil (+30) e galões de combustível (+35), sorteados com pesos 45%/35%/20%.
-- Surgem só em 20 pontos definidos: corredores, túneis, contenção e algumas salas — nunca nas docas de fuga.
-- Ficam ativas ao mesmo tempo no máximo 2 + nº de sobreviventes caixas (4 com 2 jogadores, 10 com 8).
-- Coletar leva 0,8 s (a tampa abre, o personagem se abaixa, há som e partículas) e pode ser interrompido.
-- Uma caixa só pode ser coletada por uma pessoa por vez: o servidor a reserva para quem começou; se o limite do jogador for atingido, o que sobrar fica na caixa.
-- Cada caixa esvaziada é reposta pelo servidor depois de 90 s, num ponto livre a pelo menos 15 m de qualquer sobrevivente.
+**Suprimentos.** 39 pontos (20 a mais que na v0.2), todos validados dentro de células de chão. Munição de pistola (+16, peso 32%), de AK-47 (+30, 26%), cartuchos de escopeta (+6, 24%) e combustível (+40, 18%). Ativas ao mesmo tempo: 5 + nº de sobreviventes. Coleta de 0,8 s, reserva por jogador, reposição após 90 s a pelo menos 15 m dos sobreviventes. Kits médicos: 3 + metade dos sobreviventes.
+
+**Caixa Médica (v0.3).** Fixa na Enfermaria. Humanos e a entidade podem usar: segurar E por 1,5 s cura 35% da vida máxima (nunca passa do máximo). Uso ilimitado, sem recarga, nunca acaba; o servidor valida distância e estado.
 
 ## 4. Entidades
 
@@ -86,7 +82,9 @@ Todo sobrevivente carrega três armas (nomes originais). Todo disparo, dano, rec
 
 **Evolução — Ressonância.** Ganha pontos ao golpear (+1), derrubar (+1), eliminar (+2) e quando os sobreviventes concluem objetivos (+1, mecanismo de recuperação). Nível 2 (4 pts): recargas −15%. Nível 3 (9 pts): recargas −25% e +4% de velocidade.
 
-**Contra as armas:** os disparos denunciam o atirador, a munição é escassa, Ruptura fecha distâncias rápido e a regeneração pune quem atira e foge. A Ressonância não aumenta a integridade.
+**Vida, queda e morte (v0.3).** Vida fixa de 1.200 (até 1.560 com a melhoria "Vida"), **sem regeneração automática** — só a Caixa Médica cura. Ao chegar a zero por bala, a entidade **cai derrubada**: não anda, não ataca, não usa habilidades e as balas a ignoram; depois de 20 s (`ENTITY_DOWN_TIME`, 3–120) ela se levanta com a vida máxima. **Só o lança-chamas a mata de vez**: se o fogo (jato ou queimadura) zerar a vida, a partida acaba na hora com vitória dos humanos.
+
+**Contra as armas:** os disparos denunciam o atirador, as armas estão espalhadas e são poucas, Ruptura fecha distâncias rápido e a queda é temporária — sem o lança-chamas os humanos só ganham tempo. A Ressonância não aumenta a vida.
 
 **Pontos fortes:** informação e engano; ótima contra equipes que se separam e correm muito. **Pontos fracos:** velocidade base (4,85 m/s) menor que a corrida dos sobreviventes; vulnerável a equipes que andam agachadas e usam o Detector. **Estratégia:** usar Parasita nos consoles mais disputados, Eco Falso para afastar o grupo do objetivo, e Rastro para achar quem se separou.
 
@@ -181,3 +179,31 @@ O minimapa mostra a planta real, portas, a própria posição/direção, companh
 
 ### 9.7 Visual da entidade (imagem de referência)
 Criatura alta (≈2,6 m) e muito magra, pele pálida com veias arroxeadas e escorridos de sangue, cabeça redonda e lisa com um sorriso largo de dentes, coroa de espinhos ósseos (marfim → vermelho na ponta), espinhos nos ombros e ao longo da coluna, braços longos com dedos em garra e pés de garras. Mantém todas as habilidades do Reverberante.
+
+## 10. Atualização v0.3 — upgrade geral [implementado]
+
+### 10.1 Sorteio de funções
+Não existe mais escolha de função no lobby. Ao iniciar, o servidor sorteia 1 entidade entre os conectados com menos vezes como entidade na sala; os demais (até 8) são humanos. Uma apresentação de 7 s mostra a função de cada um, revelando os jogadores um a um.
+
+### 10.2 Inventário
+5 espaços; um espaço por tipo de item. Kit médico, fusível, documento e amostra empilham até 2; cartão e detector, 1; sinalizador, 2. A 3ª unidade é recusada pelo servidor com o aviso "Inventário cheio de X (máximo 2)." e a interface mostra a quantidade (ex.: "2/2").
+
+### 10.3 Melhorias novas
+| Melhoria | Quem | Por nível | No máximo (nível 5) |
+|---|---|---|---|
+| Vida | humano | +8% | 100 → 140 |
+| Poder de fogo | humano | +5% de dano das armas | +25% |
+| Vida | entidade | +6% | 1.200 → 1.560 |
+
+A vida máxima vem das melhorias salvas no servidor; o cliente nunca informa valores.
+
+### 10.4 XP e ranking semanal
+- O XP total não tem limite (o nível continua indo até 50; acima disso o XP segue acumulando para o placar).
+- **Ranking semanal**: conta o XP e as vitórias ganhos de segunda 00:00 a domingo 23:59 (horário de Brasília). A virada é feita pelo servidor (na inicialização, a cada 60 s e em toda consulta), mesmo sem ninguém conectado. O top 10 de cada semana encerrada vai para o histórico. A virada **nunca** apaga XP total, nível, moedas, melhorias ou estatísticas.
+- A tela de ranking tem as abas Semanal (padrão, com contagem regressiva), Geral (XP total) e Vitórias, mais o pódio das semanas anteriores.
+
+### 10.5 Minimapa
+Ampliado, mostra o nome real de cada sala (Alojamentos, Refeitório, Enfermaria, Laboratório Principal…) e destaca a sala atual; o nome da sala atual aparece sempre embaixo do minimapa e no topo da tela. Continua sem revelar a entidade.
+
+### 10.6 Códigos
+PARAENSE01 (inalterado), 1MPARAENSE (1.000.000 de moedas) e 2MPARAENSE (2.000.000 de moedas). Cada conta registrada usa cada código uma vez; convidados não usam códigos.

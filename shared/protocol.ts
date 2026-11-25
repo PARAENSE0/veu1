@@ -2,12 +2,11 @@
  * Protocolo de rede (WebSocket, JSON). Tipos compartilhados entre cliente e servidor.
  * As mensagens recebidas pelo servidor são validadas com zod (server/validate.ts).
  */
-import type { AbilityId, ItemKind, SupplyKind, WeaponId } from './constants';
+import type { AbilityId, GunId, ItemKind, SupplyKind, WeaponId } from './constants';
 import type { InputCmd } from './physics';
 import type { Loadout, Stats } from './progression';
 
 export type Role = 'survivor' | 'entity';
-export type RolePref = 'any' | 'survivor' | 'entity';
 export type PStatus = 'alive' | 'downed' | 'dead' | 'escaped';
 export type RoomState = 'lobby' | 'countdown' | 'loading' | 'playing' | 'results';
 
@@ -17,7 +16,6 @@ export interface RoomPlayerInfo {
   level: number;
   host: boolean;
   ready: boolean;
-  pref: RolePref;
   connected: boolean;
   guest: boolean;
   loadout: Loadout;
@@ -115,7 +113,18 @@ export const PF = {
   RELOAD: 262144,
   BURNING: 524288,
   COLLECT: 1048576,
+  WPN_SHOTGUN: 2097152,
+  /** sem arma nas mãos */
+  UNARMED: 4194304,
+  /** usando a Caixa Médica */
+  MEDBOX: 8388608,
 } as const;
+
+/** Espaço do inventário: um tipo de item e a quantidade (até ITEM_STACK). */
+export interface InvSlot {
+  k: ItemKind;
+  n: number;
+}
 
 /** [id, x, z, yaw, pitch, flags, speed] */
 export type SnapPlayer = [string, number, number, number, number, number, number];
@@ -129,7 +138,9 @@ export interface YouState {
   stamina: number;
   exh: boolean;
   regen: number;
-  inv: (ItemKind | null)[];
+  inv: (InvSlot | null)[];
+  /** vida máxima (com melhorias) */
+  maxHp: number;
   det: number;
   ch: { label: string; p: number } | null;
   mult: number;
@@ -153,9 +164,12 @@ export interface YouState {
 }
 
 export interface WeaponState {
-  sel: WeaponId;
-  mag: { pistola: number; fuzil: number };
-  res: { pistola: number; fuzil: number };
+  /** arma em mãos (null = desarmado) */
+  sel: WeaponId | null;
+  /** armas que o jogador já encontrou */
+  own: WeaponId[];
+  mag: Record<GunId, number>;
+  res: Record<GunId, number>;
   fuel: number;
   /** segundos restantes de recarga (0 = não está recarregando) */
   reload: number;
@@ -179,8 +193,10 @@ export interface Snapshot {
   pods: string[];
   /** suprimentos visíveis: [id, tipo, x, z, sendo coletado (0/1)] */
   sup: [string, SupplyKind, number, number, number][];
-  /** vida da entidade [atual, máxima] */
-  eh: [number, number];
+  /** vida da entidade [atual, máxima, segundos até levantar (0 = de pé)] */
+  eh: [number, number, number];
+  /** armas no chão: [id, arma, x, z] */
+  gw: [string, WeaponId, number, number][];
 }
 
 export type SoundKind = 'passos' | 'porta' | 'radio' | 'alarme' | 'grito' | 'impacto' | 'queda' | 'item' | 'cura' | 'escotilha' | 'metal' | 'ruptura' | 'parasita' | 'rastro' | 'ataque' | 'entrega' | 'armario' | 'sinalizador' | 'detector' | 'recarga' | 'vazio' | 'coleta' | 'dor' | 'morte_entidade';
@@ -204,10 +220,14 @@ export type GameEvent =
   | { k: 'ability'; id: string; a: AbilityId }
   | { k: 'msg'; text: string; tone?: 'info' | 'warn' | 'good' }
   | { k: 'jumpscare' }
-  | { k: 'shot'; id: string; w: 'pistola' | 'fuzil'; x: number; y: number; z: number; tx: number; ty: number; tz: number; hit: boolean }
+  | { k: 'shot'; id: string; w: GunId; x: number; y: number; z: number; tx: number; ty: number; tz: number; hit: boolean; pel?: [number, number, number][] }
   | { k: 'enthit'; x: number; y: number; z: number; dmg: number; by: string }
   | { k: 'supply'; id: string; by: string; kind: SupplyKind; amount: number; x: number; z: number }
-  | { k: 'entdeath'; x: number; z: number; by: string };
+  | { k: 'entdeath'; x: number; z: number; by: string; fire?: boolean }
+  | { k: 'entdown'; x: number; z: number; by: string; until: number }
+  | { k: 'entup'; x: number; z: number }
+  | { k: 'medbox'; id: string; x: number; z: number; hp: number }
+  | { k: 'wpickup'; id: string; by: string; w: WeaponId };
 
 export interface PlayerResult {
   id: string;
@@ -275,6 +295,9 @@ export interface Profile {
   upgrades: import('./upgrades').UpgradeLevels;
   redeemedCodes: string[];
   rewardLog: RewardLogEntryView[];
+  /** XP desta semana (ranking semanal) e fim da semana atual */
+  weekXp: number;
+  weekEndsAt: string;
   friendRequests: number;
 }
 
@@ -294,6 +317,17 @@ export interface RankingEntry {
   totalXp: number;
   wins: number;
   matches: number;
+  /** XP somado nesta semana (ranking semanal) */
+  weekXp: number;
+}
+
+/** Resultado arquivado de uma semana encerrada. */
+export interface WeekHistory {
+  id: string;
+  start: string;
+  end: string;
+  players: number;
+  top: { pos: number; username: string; weekXp: number }[];
 }
 
 export type FriendStatus = 'offline' | 'menu' | 'lobby' | 'partida';
@@ -323,7 +357,6 @@ export type ClientMsg =
   | { t: 'room:leave' }
   | { t: 'room:list' }
   | { t: 'room:ready'; ready: boolean }
-  | { t: 'room:pref'; pref: RolePref }
   | { t: 'room:settings'; public?: boolean; map?: string; name?: string }
   | { t: 'room:start' }
   | { t: 'room:kick'; id: string }

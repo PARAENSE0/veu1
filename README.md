@@ -4,22 +4,24 @@ Terror multiplayer assimétrico para navegador: **1 entidade contra até 8 sobre
 
 ![A criatura no Laboratório Principal, sob a luz de emergência](docs/capturas/40-laboratorio-criatura.png)
 
-## Estado atual — versão 0.2
+## Estado atual — versão 0.3
 
 | Funciona e foi testado | Ainda não implementado |
 |---|---|
 | Contas (cadastro, login, convidado), sessões seguras, **progresso permanente salvo automaticamente no servidor** | Mapas 2 e 3 (Setor Helix, Estação Ártica) — projetados em `docs/DESIGN.md` |
-| **Nível máximo 50** com curva progressiva, XP por participação, desempenho, vitória, fuga/sobrevivência e **MVP (+20%)** | Entidades 2 e 3 (A Tecelã, O Hiato) — projetadas em `docs/DESIGN.md` |
-| **Ranking online** (por XP ou vitórias, posição própria, atualização automática, sem duplicados) | Adaptador PostgreSQL (schema pronto e validado; falta o código com o pacote `pg`) |
-| **Amigos**: busca por nome/ID, pedidos, aceitar/recusar/cancelar/remover, presença (offline/online/lobby/partida), convite para a sala, notificações em tempo real | Modelos esculpidos por artista (os atuais são malhas orgânicas procedurais) |
-| **Melhorias permanentes** (5 de humano, 5 de monstro, 5 níveis cada) com efeito real na partida, aplicado pelo servidor | Compensação de latência nos tiros |
-| **Código de presente** (PARAENSE01 = nível 50 + 20.000 fragmentos, uma vez por conta) e administração de novos códigos | Pagamentos reais (fora do escopo, por pedido) |
-| **Combate reequilibrado**: golpe comum = 18% da vida; nenhum monstro derruba um humano com 2 golpes comuns; **Golpe Brutal** especial com recarga | |
-| **Portas automáticas** para humanos, **estamina** com recuperação mais rápida parado, **iluminação** verificada célula por célula | |
-| **Minimapa** no canto superior esquerdo (amplia ao clicar ou com M) e **assistência de mira** (não atira sozinha) | |
-| **Nova criatura** baseada na imagem de referência e **humanos orgânicos** (sem cubos), com animações | |
-| Salas com código, partida rápida, chat, voz WebRTC, armas e suprimentos, objetivos em 3 fases, espectador | |
-| Controles de PC (configuráveis) e de toque; PWA/APK | |
+| **Sorteio de funções pelo servidor**: ninguém escolhe; 1 entidade + até 8 humanos (9 jogadores), sorteio justo (quem foi menos vezes entidade tem prioridade) e apresentação "Você é a Entidade / Você é humano" | Entidades 2 e 3 (A Tecelã, O Hiato) — projetadas em `docs/DESIGN.md` |
+| **XP sem limite** (o nível continua indo até 50) e **ranking semanal** que zera toda segunda 00:00 (Brasília), com contagem regressiva, histórico das semanas anteriores e ranking geral/vitórias | Adaptador PostgreSQL (schema pronto e validado; falta o código com o pacote `pg`) — no plano gratuito do Render os dados somem a cada reinício |
+| **Armas espalhadas pelo mapa** (ninguém começa armado): pistola, **AK-47**, **escopeta** (6 cartuchos, chumbos com dispersão e queda por distância) e **lança-chamas** funcional (combustível, alcance, fogo, sem atravessar parede); quantidades máximas por partida | Modelos esculpidos por artista (os atuais são malhas orgânicas procedurais) |
+| **Inventário com pilhas**: kit, fusível e documento até 2 cada (um espaço por tipo), aviso "Inventário cheio de…" | Compensação de latência nos tiros |
+| **Mais munição e itens** (39 pontos de suprimento + 20 pontos de arma, todos validados dentro de salas) | Testes em celulares reais (só emulação de tela/toque no Chrome) |
+| **Caixa Médica** na Enfermaria: humanos e entidade usam, segurar 1,5 s cura 35% da vida máxima, uso ilimitado e sem recarga | Pagamentos reais (fora do escopo, por pedido) |
+| **Entidade não regenera**; ao zerar a vida ela **cai derrubada** (20 s configuráveis) e levanta com vida cheia; **só o lança-chamas a mata de vez** → vitória imediata dos humanos | |
+| **Melhorias de vida** (humano 100→140, entidade 1200→1560) e **Poder de fogo**; tudo validado no servidor | |
+| **Minimapa com nomes reais das salas** e sala atual sempre visível | |
+| Códigos **PARAENSE01**, **1MPARAENSE** (1.000.000 de moedas) e **2MPARAENSE** (2.000.000), uma vez por conta | |
+| Amigos, presença, convites, melhorias permanentes, portas automáticas, estamina, iluminação, assistência de mira, chat, voz WebRTC, objetivos em 3 fases, espectador, PWA/APK | |
+
+![Entidade derrubada no chão da Enfermaria, com armas no chão](docs/capturas/46-entidade-derrubada.png)
 
 ## Como rodar
 
@@ -38,9 +40,11 @@ Desenvolvimento com recompilação automática: `npm run dev`.
 ### Testes
 
 ```bash
-npm test               # unitários (62) + contas/social/códigos (64) + combate/portas/estamina (32)
-                       # + armas e suprimentos (33) + partida completa com bots (56)
-npm run test:browser   # Chrome real: menus, código, melhorias, partida 3D, minimapa, armas, voz (49)
+npm test               # unitários (71) + balanceamento simulado (67) + contas/social/códigos/semana (82)
+                       # + combate/portas/estamina (32) + armas em rede (22) + 9 jogadores (19)
+                       # + partida completa com bots (56)          → 349 verificações
+npm run test:browser   # Chrome real: menus, sorteio, ranking semanal, partida 3D, armas, minimapa,
+                       # vida, entidade derrubada, voz, PC e celular (54 + 30)
 node tests/model-shots.mjs     # capturas dos modelos 3D em várias poses (revisão visual)
 bash scripts/check-schema.sh   # valida o schema PostgreSQL numa instância temporária
 npm run typecheck
@@ -55,10 +59,10 @@ npm run typecheck
 | WASD / mouse | mover / olhar | mover / olhar |
 | Shift | correr | — |
 | Ctrl | agachar | espreitar (camuflagem) |
-| E (segurar) | interagir, entregar, consertar, resgatar | portas, vasculhar armários |
+| E (segurar) | interagir, pegar arma, Caixa Médica, resgatar | portas, armários, Caixa Médica |
 | F | lanterna | Parasita |
-| Botão esq. / Q ou roda / R | atirar / trocar arma / recarregar | — |
-| Tab / 1–4 | inventário / usar item | — |
+| Botão esq. / Q ou roda / R | atirar (ou lança-chamas segurando) / trocar entre armas que possui / recarregar | — |
+| Tab / 1–5 | inventário / usar item | — |
 | Botão esq. / Botão dir. | — | atacar / Golpe Brutal (especial) |
 | Q / R / Espaço | — | Rastro / Eco Falso / Ruptura |
 | M | ampliar/reduzir minimapa | idem |
@@ -77,12 +81,13 @@ No celular aparecem joystick, área de toque para olhar e botões de ação.
 | `TRUST_PROXY=1` | atrás de proxy reverso (Nginx, Caddy) |
 | `ALLOWED_ORIGINS` | origens aceitas no WebSocket, separadas por vírgula |
 | `ANDROID_ASSETLINKS` | conteúdo do `assetlinks.json` gerado pelo PWABuilder (remove a barra de endereço do APK) |
+| `ENTITY_DOWN_TIME` | segundos que a entidade fica derrubada (padrão 20, entre 3 e 120) |
 | `ADMIN_TOKEN` | senha da administração de códigos de presente (sem ela a rota fica bloqueada) |
 | `ICE_SERVERS` | JSON com STUN/TURN para a voz, ex.: `[{"urls":"turn:turn.seudominio.com:3478","username":"u","credential":"s"}]` |
 
 ### Códigos de presente
 
-O código **PARAENSE01** é criado automaticamente na primeira inicialização (nível 50 + 20.000 fragmentos, uma vez por conta registrada). Para cadastrar novos códigos sem mexer no código-fonte:
+Os códigos **PARAENSE01** (nível 50 + 20.000 fragmentos), **1MPARAENSE** (1.000.000 de moedas) e **2MPARAENSE** (2.000.000 de moedas) são criados automaticamente na inicialização; cada conta registrada usa cada código uma vez. Para cadastrar novos códigos sem mexer no código-fonte:
 
 ```bash
 curl -X POST https://SEU-SERVIDOR/api/admin/codes -H "x-admin-token: $ADMIN_TOKEN" \
@@ -103,3 +108,4 @@ O jogo funciona como aplicativo instalável (PWA) e pode virar APK. Passo a pass
 - `docs/DESIGN.md` — documento de game design: regras, entidades, mapas, objetivos, balanceamento.
 - `docs/ROADMAP.md` — plano por etapas com o que foi concluído e o que falta.
 - `docs/PUBLICAR-ANDROID.md` — hospedar o servidor e gerar o APK.
+- `docs/ENTREGA-v0.3.md` — o que mudou na versão 0.3, arquivos alterados, testes e pendências.

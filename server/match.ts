@@ -46,11 +46,15 @@ import {
   type ItemKind,
   ENTITY_HITBOX,
   ENTITY_HP_BASE,
-  ENTITY_HP_PER_SURVIVOR,
-  ENTITY_REGEN,
-  ENTITY_REGEN_DELAY,
+  ENTITY_DOWN_TIME,
   FLAMER,
   GUNS,
+  ITEM_STACK,
+  MEDBOX_HEAL,
+  MEDBOX_RANGE,
+  MEDBOX_TIME,
+  weaponCounts,
+  type GunId,
   SUPPLY_COLLECT_TIME,
   SUPPLY_INFO,
   SUPPLY_RESPAWN,
@@ -64,7 +68,7 @@ import {
 import { getMap, type MapDef } from '../shared/map';
 import { dist2, forwardVec, isOpaque, isSolid, lineOfSight, makeGrid, pickTarget, raycast, resolveCircle, stepMove, type Grid, type InputCmd, type MoveParams, type MoveState } from '../shared/physics';
 import type { Loadout, Stats } from '../shared/progression';
-import { PF, type EcoType, type GameEvent, type MatchIntro, type MatchResults, type PlayerResult, type PStatus, type Role, type ServerMsg, type SnapPlayer, type Snapshot, type SoundKind } from '../shared/protocol';
+import { PF, type InvSlot, type EcoType, type GameEvent, type MatchIntro, type MatchResults, type PlayerResult, type PStatus, type Role, type ServerMsg, type SnapPlayer, type Snapshot, type SoundKind } from '../shared/protocol';
 import { Rng } from '../shared/rng';
 import { modsFor, type Mods, type UpgradeLevels } from '../shared/upgrades';
 import { buildTasks, taskView, type Task } from './tasks';
@@ -77,7 +81,7 @@ export interface MatchPlayerInit {
   upgrades?: Partial<UpgradeLevels>;
 }
 
-type Channel = { kind: 'station'; station: string; label: string } | { kind: 'revive'; target: string; label: string } | { kind: 'heal'; label: string } | { kind: 'supply'; supply: string; label: string };
+type Channel = { kind: 'station'; station: string; label: string } | { kind: 'revive'; target: string; label: string } | { kind: 'heal'; label: string } | { kind: 'supply'; supply: string; label: string } | { kind: 'medbox'; label: string };
 
 interface MPlayer extends MoveState {
   id: string;
@@ -94,7 +98,7 @@ interface MPlayer extends MoveState {
   hiddenFor: number;
   flashlight: boolean;
   flickerUntil: number;
-  inventory: (ItemKind | null)[];
+  inventory: (InvSlot | null)[];
   detCharges: number;
   detectorCd: number;
   channel: Channel | null;
@@ -127,10 +131,14 @@ interface MPlayer extends MoveState {
   spec: string | null;
   lastSeenBy: Map<string, number>;
   // armas (sobreviventes)
-  weapon: WeaponId;
-  mag: { pistola: number; fuzil: number };
-  reserve: { pistola: number; fuzil: number };
+  /** arma em mãos (null = desarmado) */
+  weapon: WeaponId | null;
+  owned: Record<WeaponId, boolean>;
+  mag: Record<GunId, number>;
+  reserve: Record<GunId, number>;
   fuel: number;
+  /** abertura extra da mira por disparos seguidos (recuo) */
+  bloom: number;
   reloadUntil: number;
   nextShot: number;
   trigger: boolean;
@@ -146,6 +154,18 @@ interface MPlayer extends MoveState {
   hurtSoundAt: number;
   mods: Mods;
   heavy: boolean;
+  /** entidade derrubada (não age; levanta com vida cheia em downUntil) */
+  entDown: boolean;
+  downUntil: number;
+}
+
+interface GroundWeapon {
+  id: string;
+  w: WeaponId;
+  x: number;
+  z: number;
+  /** munição no pente (armas de fogo) ou combustível (lança-chamas) */
+  ammo: number;
 }
 
 interface Supply {
@@ -169,6 +189,9 @@ export interface MatchHooks {
   onEnd(results: MatchResults, stats: Map<string, { role: Role; stats: Partial<Stats>; result: PlayerResult }>): void;
 }
 
+const SUPPLY_GUN: Record<Exclude<SupplyKind, 'combustivel'>, GunId> = { mun_pistola: 'pistola', mun_fuzil: 'fuzil', mun_escopeta: 'escopeta' };
+const WEAPON_NAMES_SHORT: Record<WeaponId, string> = { pistola: 'a pistola', fuzil: 'a AK-47', escopeta: 'a escopeta', lanca: 'o lança-chamas' };
+
 const zeroAbilities = (): Record<AbilityId, number> => ({ rastro: 0, eco: 0, ruptura: 0, parasita: 0, golpe: 0 });
 const round2 = (v: number) => Math.round(v * 100) / 100;
 
@@ -185,6 +208,8 @@ export class Match {
   readonly duration: number;
   private items = new Map<string, GroundItem>();
   private itemSeq = 0;
+  private weapons = new Map<string, GroundWeapon>();
+  private weaponSeq = 0;
   tasks: Task[];
   stage = 1;
   private doorLock = new Map<number, number>();
@@ -201,6 +226,8 @@ export class Match {
   private supplySeq = 0;
   private supplyRespawnAt: number[] = [];
   private readonly supplyRespawn: number;
+  /** segundos que a entidade fica derrubada (configurável por sala/teste) */
+  private readonly entityDownTime: number;
   private events = new Map<string, GameEvent[]>();
   private nSurv: number;
 
@@ -210,13 +237,14 @@ export class Match {
     readonly seed: number,
     inits: MatchPlayerInit[],
     private hooks: MatchHooks,
-    opts: { duration?: number; supplyRespawn?: number } = {},
+    opts: { duration?: number; supplyRespawn?: number; entityDownTime?: number } = {},
   ) {
     this.map = getMap(mapId);
     this.grid = makeGrid(this.map);
     this.rng = new Rng(seed);
     this.duration = opts.duration ?? MATCH_DURATION;
     this.supplyRespawn = opts.supplyRespawn ?? SUPPLY_RESPAWN;
+    this.entityDownTime = opts.entityDownTime ?? ENTITY_DOWN_TIME;
     const ent = inits.filter((p) => p.role === 'entity');
     if (ent.length !== 1) throw new Error('a partida precisa de exatamente 1 entidade');
     this.entityId = ent[0].id;
@@ -230,15 +258,18 @@ export class Match {
     });
     this.players.set(ent[0].id, this.newPlayer(ent[0], espawn.x, espawn.z));
     this.tasks = buildTasks(this.rng, this.map, this.nSurv);
-    // itens de apoio
-    const supply: ItemKind[] = ['kit', 'kit', 'kit', 'detector', 'detector', 'sinalizador', 'sinalizador', 'sinalizador'];
-    if (this.nSurv > 4) supply.push('kit', 'sinalizador');
+    // itens de apoio espalhados (kits médicos em quantidade proporcional à equipe)
+    const supply: ItemKind[] = ['detector', 'detector', 'sinalizador', 'sinalizador', 'sinalizador'];
+    for (let i = 0; i < 3 + Math.ceil(this.nSurv / 2); i++) supply.push('kit');
+    if (this.nSurv > 4) supply.push('sinalizador', 'detector');
     this.spawnItems(supply);
     this.activateStage(1, true);
     this.ecoMemory.set('passos', 0);
-    // vida da entidade proporcional ao tamanho da equipe
+    // vida da entidade: base fixa × melhoria "Vida máxima"
     const e = this.entity;
-    e.maxHp = e.hp = ENTITY_HP_BASE + ENTITY_HP_PER_SURVIVOR * this.nSurv;
+    e.maxHp = e.hp = Math.round(ENTITY_HP_BASE * e.mods.hpMult);
+    // ninguém começa armado: as armas aparecem espalhadas pelo mapa
+    this.spawnWeapons();
     // suprimentos iniciais
     for (let i = 0; i < supplyCap(this.nSurv); i++) this.spawnSupply(true);
   }
@@ -262,7 +293,7 @@ export class Match {
       crouch: false,
       sprinting: false,
       speed: 0,
-      hp: SURV.hpMax,
+      hp: Math.round(SURV.hpMax * modsFor(p.role, p.upgrades ?? {}).hpMult),
       status: 'alive',
       bleed: 0,
       hidden: null,
@@ -299,10 +330,12 @@ export class Match {
       outcome: null,
       spec: null,
       lastSeenBy: new Map(),
-      weapon: 'pistola',
-      mag: { pistola: GUNS.pistola.startMag, fuzil: GUNS.fuzil.startMag },
-      reserve: { pistola: GUNS.pistola.startReserve, fuzil: GUNS.fuzil.startReserve },
-      fuel: FLAMER.startFuel,
+      weapon: null,
+      owned: { pistola: false, fuzil: false, escopeta: false, lanca: false },
+      mag: { pistola: 0, fuzil: 0, escopeta: 0 },
+      reserve: { pistola: 0, fuzil: 0, escopeta: 0 },
+      fuel: 0,
+      bloom: 0,
       reloadUntil: 0,
       nextShot: 0,
       trigger: false,
@@ -310,13 +343,15 @@ export class Match {
       triggerAt: 0,
       firingUntil: 0,
       flaming: false,
-      maxHp: SURV.hpMax,
+      maxHp: Math.round(SURV.hpMax * modsFor(p.role, p.upgrades ?? {}).hpMult),
       lastDamageAt: -99,
       burnUntil: 0,
       burnBy: null,
       hurtSoundAt: 0,
       mods: modsFor(p.role, p.upgrades ?? {}),
       heavy: false,
+      entDown: false,
+      downUntil: 0,
     };
   }
 
@@ -358,6 +393,98 @@ export class Match {
     this.items.set(id, { id, kind, x, z });
   }
 
+  // ------------------------------------------------------------------ inventário
+  /** Quantas unidades deste item o jogador carrega. */
+  private invCount(p: MPlayer, k: ItemKind) {
+    return p.inventory.find((s) => s?.k === k)?.n ?? 0;
+  }
+  /**
+   * Guarda 1 unidade. Cada tipo ocupa um único espaço e empilha até ITEM_STACK
+   * (kits, fusíveis e documentos: 2). Retorna o motivo se não couber.
+   */
+  private invAdd(p: MPlayer, k: ItemKind): string | null {
+    const slot = p.inventory.find((s) => s?.k === k);
+    if (slot) {
+      if (slot.n >= ITEM_STACK[k]) return `Inventário cheio de ${ITEM_INFO[k].name.toLowerCase()} (máximo ${ITEM_STACK[k]}).`;
+      slot.n++;
+      return null;
+    }
+    const free = p.inventory.indexOf(null);
+    if (free < 0) return 'Inventário cheio. Solte algo para abrir espaço.';
+    p.inventory[free] = { k, n: 1 };
+    return null;
+  }
+  /** Retira até n unidades; devolve quantas saíram. */
+  private invTake(p: MPlayer, k: ItemKind, n: number) {
+    const i = p.inventory.findIndex((s) => s?.k === k);
+    if (i < 0) return 0;
+    const slot = p.inventory[i]!;
+    const t = Math.min(n, slot.n);
+    slot.n -= t;
+    if (slot.n <= 0) p.inventory[i] = null;
+    return t;
+  }
+
+  // ------------------------------------------------------------------ armas no mapa
+  /**
+   * Sorteia onde cada arma aparece. As mais raras escolhem primeiro; cada arma
+   * vai para uma área diferente (enquanto houver) e, entre os pontos livres,
+   * preferimos os mais distantes das armas já colocadas — nada de todas juntas.
+   */
+  private spawnWeapons() {
+    const counts = weaponCounts(this.nSurv);
+    const order: WeaponId[] = [];
+    for (const w of ['lanca', 'escopeta', 'fuzil', 'pistola'] as WeaponId[]) for (let i = 0; i < counts[w]; i++) order.push(w);
+    const spots = this.rng.shuffle([...this.map.weaponSpots]);
+    const chosen: { x: number; z: number; zone: string }[] = [];
+    for (const w of order) {
+      const usedZones = new Set(chosen.map((c) => c.zone));
+      let pool = spots.filter((s) => !chosen.includes(s) && !usedZones.has(s.zone));
+      if (!pool.length) pool = spots.filter((s) => !chosen.includes(s));
+      if (!pool.length) break;
+      const score = (s: { x: number; z: number }) => (chosen.length ? Math.min(...chosen.map((c) => Math.hypot(c.x - s.x, c.z - s.z))) : 0);
+      pool.sort((a, b) => score(b) - score(a));
+      const pick = pool[this.rng.int(Math.min(3, pool.length))];
+      chosen.push(pick);
+      this.placeWeapon(w, pick.x, pick.z, w === 'lanca' ? FLAMER.pickupFuel : GUNS[w].pickupMag);
+    }
+  }
+  private placeWeapon(w: WeaponId, x: number, z: number, ammo: number) {
+    const id = `w${++this.weaponSeq}`;
+    this.weapons.set(id, { id, w, x, z, ammo });
+    return id;
+  }
+  /** Pegar uma arma: acontece inteiro dentro de um tick (dois jogadores nunca levam a mesma). */
+  private pickupWeapon(p: MPlayer, gw: GroundWeapon) {
+    if (p.role !== 'survivor' || p.status !== 'alive' || !this.weapons.has(gw.id)) return;
+    if (p.owned[gw.w]) {
+      this.toPlayer(p.id, { k: 'msg', text: `Você já tem ${WEAPON_NAMES_SHORT[gw.w]}. Deixe para um companheiro.`, tone: 'warn' });
+      return;
+    }
+    this.weapons.delete(gw.id);
+    p.owned[gw.w] = true;
+    if (gw.w === 'lanca') p.fuel = Math.min(FLAMER.maxFuel, p.fuel + gw.ammo);
+    else p.mag[gw.w] = Math.min(GUNS[gw.w].mag, gw.ammo);
+    p.weapon = gw.w;
+    p.reloadUntil = 0;
+    p.bloom = 0;
+    this.broadcastNear(gw.x, gw.z, { k: 'wpickup', id: gw.id, by: p.id, w: gw.w });
+    this.soundAt('coleta', gw.x, gw.z);
+    this.toPlayer(p.id, { k: 'msg', text: `Pegou: ${WEAPON_NAMES_SHORT[gw.w]}`, tone: 'good' });
+  }
+  /** Ao morrer, as armas caem no chão (com o que tinham no pente/tanque). */
+  private dropWeapons(p: MPlayer) {
+    for (const w of WEAPON_ORDER) {
+      if (!p.owned[w]) continue;
+      const [x, z] = resolveCircle(this.grid, p.x + this.rng.range(-0.6, 0.6), p.z + this.rng.range(-0.6, 0.6), 0.25);
+      this.placeWeapon(w, x, z, w === 'lanca' ? p.fuel : p.mag[w]);
+      p.owned[w] = false;
+    }
+    p.weapon = null;
+    p.fuel = 0;
+    p.mag = { pistola: 0, fuzil: 0, escopeta: 0 };
+  }
+
   // ------------------------------------------------------------------ suprimentos
   /**
    * Cria uma caixa de suprimento num ponto livre. No início da partida qualquer
@@ -389,9 +516,9 @@ export class Match {
 
   /** Quanto o jogador ainda pode carregar deste tipo de suprimento. */
   private supplySpace(p: MPlayer, kind: SupplyKind): number {
-    if (kind === 'mun_pistola') return GUNS.pistola.maxReserve - p.reserve.pistola;
-    if (kind === 'mun_fuzil') return GUNS.fuzil.maxReserve - p.reserve.fuzil;
-    return FLAMER.maxFuel - p.fuel;
+    if (kind === 'combustivel') return FLAMER.maxFuel - p.fuel;
+    const g = SUPPLY_GUN[kind];
+    return GUNS[g].maxReserve - p.reserve[g];
   }
 
   private startCollect(p: MPlayer, s: Supply) {
@@ -411,9 +538,8 @@ export class Match {
   private finishCollect(p: MPlayer, s: Supply) {
     const take = Math.min(s.amount, Math.max(0, this.supplySpace(p, s.kind)));
     if (take > 0) {
-      if (s.kind === 'mun_pistola') p.reserve.pistola += take;
-      else if (s.kind === 'mun_fuzil') p.reserve.fuzil += take;
-      else p.fuel += take;
+      if (s.kind === 'combustivel') p.fuel += take;
+      else p.reserve[SUPPLY_GUN[s.kind]] += take;
       s.amount -= take;
     }
     s.claimedBy = null;
@@ -446,7 +572,7 @@ export class Match {
 
   // ------------------------------------------------------------------ armas
   private startReload(p: MPlayer) {
-    if (p.weapon === 'lanca' || p.reloadUntil > 0) return;
+    if (!p.weapon || p.weapon === 'lanca' || p.reloadUntil > 0) return;
     const def = GUNS[p.weapon];
     if (p.mag[p.weapon] >= def.mag || p.reserve[p.weapon] <= 0) return;
     p.reloadUntil = this.time + def.reload;
@@ -456,7 +582,7 @@ export class Match {
   private finishReload(p: MPlayer) {
     const w = p.weapon;
     p.reloadUntil = 0;
-    if (w === 'lanca') return;
+    if (!w || w === 'lanca') return;
     const need = GUNS[w].mag - p.mag[w];
     const take = Math.min(need, p.reserve[w]);
     p.mag[w] += take;
@@ -464,7 +590,7 @@ export class Match {
   }
 
   private canShoot(p: MPlayer) {
-    return p.role === 'survivor' && p.status === 'alive' && !p.hidden && p.channel?.kind !== 'heal' && p.channel?.kind !== 'supply' && !p.sprinting;
+    return p.role === 'survivor' && p.status === 'alive' && !p.hidden && !!p.weapon && p.channel?.kind !== 'heal' && p.channel?.kind !== 'supply' && p.channel?.kind !== 'medbox' && !p.sprinting;
   }
 
   private updateWeapons(p: MPlayer) {
@@ -473,7 +599,9 @@ export class Match {
     // um clique rápido (apertar e soltar no mesmo tick) ainda conta como 1 disparo,
     // mas o pedido expira em 0,25 s para não disparar "atrasado"
     if (p.triggerFresh && this.time - p.triggerAt > 0.25) p.triggerFresh = false;
-    if (!this.canShoot(p)) {
+    // o recuo (abertura da mira) volta ao normal quando para de atirar
+    if (this.time - p.nextShot > 0.25) p.bloom = Math.max(0, p.bloom - DT * 0.2);
+    if (!this.canShoot(p) || !p.weapon) {
       p.triggerFresh = false;
       return;
     }
@@ -492,47 +620,78 @@ export class Match {
       this.flameDamage(p);
       return;
     }
-    const def = GUNS[p.weapon];
+    const w = p.weapon;
+    const def = GUNS[w];
     if (p.reloadUntil > 0 || this.time < p.nextShot) return;
     if (!def.auto && !p.triggerFresh) return;
     p.triggerFresh = false;
-    if (p.mag[p.weapon] <= 0) {
-      if (p.reserve[p.weapon] > 0) this.startReload(p);
+    if (p.mag[w] <= 0) {
+      if (p.reserve[w] > 0) this.startReload(p);
       else this.toPlayer(p.id, { k: 'sound', s: 'vazio', x: round2(p.x), z: round2(p.z) });
       return;
     }
-    p.mag[p.weapon]--;
+    p.mag[w]--;
     p.nextShot = this.time + def.interval;
     p.firingUntil = this.time + 0.12;
     if (p.channel?.kind === 'station') p.channel = null;
-    this.fireGun(p, def.id);
-    if (p.mag[p.weapon] === 0 && p.reserve[p.weapon] > 0) this.startReload(p);
+    this.fireGun(p, w);
+    p.bloom = Math.min(def.spread, p.bloom + def.recoil);
+    if (p.mag[w] === 0 && p.reserve[w] > 0) this.startReload(p);
   }
 
-  /** Disparo instantâneo (hitscan) calculado no servidor: paredes, chão e teto bloqueiam. */
-  private fireGun(p: MPlayer, w: 'pistola' | 'fuzil') {
+  /**
+   * Disparo instantâneo (hitscan) calculado no servidor: paredes, chão e teto
+   * bloqueiam. A escopeta dispara vários chumbos; cada chumbo acerta no máximo
+   * uma vez e o dano cai com a distância. Todo o dano de um disparo é somado e
+   * aplicado de uma vez (nunca em dobro).
+   */
+  private fireGun(p: MPlayer, w: GunId) {
     const def = GUNS[w];
     const eyeY = p.crouch ? 1.0 : 1.5;
-    const yaw = p.yaw + this.rng.range(-def.spread, def.spread);
-    const pitch = p.pitch + this.rng.range(-def.spread, def.spread) * 0.6;
+    const e = this.entity;
+    let total = 0;
+    let first: { t: number; dx: number; dy: number; dz: number; hit: boolean } | null = null;
+    const extra: [number, number, number][] = [];
+    const spread = def.spread + p.bloom;
+    for (let i = 0; i < def.pellets; i++) {
+      const yaw = p.yaw + this.rng.range(-spread, spread);
+      const pitch = p.pitch + this.rng.range(-spread, spread) * 0.6;
+      const r = this.traceShot(p.x, p.z, eyeY, yaw, pitch, def.range);
+      if (r.hit) {
+        const fall = r.t <= def.falloffStart ? 1 : Math.max(def.falloffMin, 1 - ((r.t - def.falloffStart) / Math.max(0.01, def.range - def.falloffStart)) * (1 - def.falloffMin));
+        total += def.damage * fall;
+      }
+      if (!first) first = r;
+      else if (extra.length < 7) extra.push([round2(p.x + r.dx * r.t), round2(eyeY + r.dy * r.t), round2(p.z + r.dz * r.t)]);
+    }
+    const f = first!;
+    const ev: GameEvent = { k: 'shot', id: p.id, w, x: round2(p.x), y: round2(eyeY - 0.15), z: round2(p.z), tx: round2(p.x + f.dx * f.t), ty: round2(eyeY + f.dy * f.t), tz: round2(p.z + f.dz * f.t), hit: total > 0 };
+    if (extra.length) ev.pel = extra;
+    this.broadcastNear(p.x, p.z, ev);
+    this.pingEntity(p.x, p.z, 'tiro', 1.5);
+    if (total > 0) this.damageEntity(total * p.mods.attackMult, p, { x: e.x, y: 1.4, z: e.z }, true);
+  }
+
+  /** Um raio do olho do atirador: retorna a distância até o que bloqueia e se acertou a entidade. */
+  private traceShot(px: number, pz: number, eyeY: number, yaw: number, pitch: number, range: number) {
     const cp = Math.cos(pitch);
     const dx = -Math.sin(yaw) * cp;
     const dy = Math.sin(pitch);
     const dz = -Math.cos(yaw) * cp;
-    let maxT = def.range;
-    if (Math.abs(dx) + Math.abs(dz) > 1e-4) maxT = Math.min(maxT, raycast(this.grid, p.x, p.z, dx, dz, def.range, isOpaque));
+    let maxT = range;
+    if (Math.abs(dx) + Math.abs(dz) > 1e-4) maxT = Math.min(maxT, raycast(this.grid, px, pz, dx, dz, range, isOpaque));
     if (dy < -1e-4) maxT = Math.min(maxT, eyeY / -dy);
     if (dy > 1e-4) maxT = Math.min(maxT, (WALL_H - eyeY) / dy);
     const e = this.entity;
     let hitT = Infinity;
     // interseção raio x cilindro vertical (corpo da entidade)
-    const ox = p.x - e.x;
-    const oz = p.z - e.z;
+    const ox = px - e.x;
+    const oz = pz - e.z;
     const a = dx * dx + dz * dz;
     const b = 2 * (ox * dx + oz * dz);
     const c = ox * ox + oz * oz - ENTITY_HITBOX.radius * ENTITY_HITBOX.radius;
     const disc = b * b - 4 * a * c;
-    if (a > 1e-6 && disc >= 0) {
+    if (a > 1e-6 && disc >= 0 && !e.entDown) {
       const sq = Math.sqrt(disc);
       for (const t of [(-b - sq) / (2 * a), (-b + sq) / (2 * a)]) {
         if (t <= 0) continue;
@@ -544,11 +703,7 @@ export class Match {
       }
     }
     const hit = hitT < maxT;
-    const t = hit ? hitT : maxT;
-    const ev: GameEvent = { k: 'shot', id: p.id, w, x: round2(p.x), y: round2(eyeY - 0.15), z: round2(p.z), tx: round2(p.x + dx * t), ty: round2(eyeY + dy * t), tz: round2(p.z + dz * t), hit };
-    this.broadcastNear(p.x, p.z, ev);
-    this.pingEntity(p.x, p.z, 'tiro', 1.5);
-    if (hit) this.damageEntity(def.damage, p, { x: p.x + dx * t, y: eyeY + dy * t, z: p.z + dz * t }, true);
+    return { t: hit ? hitT : maxT, dx, dy, dz, hit };
   }
 
   private flameDamage(p: MPlayer) {
@@ -560,14 +715,22 @@ export class Match {
     const dot = d > 0.05 ? ((e.x - p.x) * fx + (e.z - p.z) * fz) / d : 1;
     if (dot < FLAMER.coneCos && d > 1) return;
     if (!lineOfSight(this.grid, p.x, p.z, e.x, e.z)) return;
+    if (e.entDown) return;
     e.burnUntil = this.time + FLAMER.burnTime;
     e.burnBy = p.id;
-    this.damageEntity(FLAMER.dps * DT, p, { x: e.x, y: 1.3, z: e.z }, this.tick % 8 === 0);
+    this.damageEntity(FLAMER.dps * DT * p.mods.attackMult, p, { x: e.x, y: 1.3, z: e.z }, this.tick % 8 === 0, true);
   }
 
-  private damageEntity(amount: number, by: MPlayer, at: { x: number; y: number; z: number }, emit: boolean) {
+  /**
+   * Dano na entidade (sempre calculado aqui). Se a vida chegar a 0:
+   *  - pelo fogo (lança-chamas ou queimadura dele) → morte definitiva, fim da
+   *    partida e vitória dos sobreviventes;
+   *  - por qualquer outra arma → a entidade é DERRUBADA e levanta com a vida
+   *    cheia depois de ENTITY_DOWN_TIME. Derrubada, não recebe dano.
+   */
+  private damageEntity(amount: number, by: MPlayer, at: { x: number; y: number; z: number }, emit: boolean, fire = false) {
     const e = this.entity;
-    if (this.ended || e.hp <= 0) return;
+    if (this.ended || e.hp <= 0 || e.entDown) return;
     amount *= e.mods.damageTakenMult;
     e.hp = Math.max(0, e.hp - amount);
     e.lastDamageAt = this.time;
@@ -575,18 +738,49 @@ export class Match {
     e.camoT = 0;
     e.revealUntil = Math.max(e.revealUntil, this.time + 1);
     by.score += amount / 10;
+    if (e.channel) e.channel = null;
     if (emit) this.broadcastNear(at.x, at.z, { k: 'enthit', x: round2(at.x), y: round2(at.y), z: round2(at.z), dmg: Math.round(amount), by: by.id });
     if (this.time - e.hurtSoundAt > 0.7) {
       e.hurtSoundAt = this.time;
       this.soundAt('dor', e.x, e.z);
     }
-    if (e.hp <= 0) {
+    if (e.hp > 0) return;
+    if (fire) {
       by.score += 500;
       for (const o of this.players.values()) if (o.role === 'survivor' && (o.status === 'alive' || o.status === 'downed')) o.score += 200;
-      this.broadcast({ k: 'entdeath', x: round2(e.x), z: round2(e.z), by: by.id });
+      this.broadcast({ k: 'entdeath', x: round2(e.x), z: round2(e.z), by: by.id, fire: true });
       this.soundAt('morte_entidade', e.x, e.z);
-      this.end('survivors', `A entidade foi destruída por ${by.name}.`);
+      this.end('survivors', `A entidade foi incinerada por ${by.name} com o lança-chamas.`);
+      return;
     }
+    this.knockDown(e, by);
+  }
+
+  private knockDown(e: MPlayer, by: MPlayer) {
+    e.entDown = true;
+    e.hp = 0;
+    e.downUntil = this.time + this.entityDownTime;
+    e.stunUntil = e.downUntil;
+    e.attackPhase = 'none';
+    e.heavy = false;
+    e.burnUntil = 0;
+    e.channel = null;
+    for (const id of Object.keys(e.active) as AbilityId[]) e.active[id] = 0;
+    e.camo = false;
+    by.score += 300;
+    by.stats.entityDowns = (by.stats.entityDowns ?? 0) + 1;
+    this.broadcast({ k: 'entdown', x: round2(e.x), z: round2(e.z), by: by.id, until: round2(this.entityDownTime) });
+    this.soundAt('morte_entidade', e.x, e.z);
+  }
+
+  private updateEntityDown(e: MPlayer) {
+    if (!e.entDown || this.time < e.downUntil) return;
+    e.entDown = false;
+    e.hp = e.maxHp; // volta com a vida cheia (respeitando a melhoria de vida)
+    e.stunUntil = this.time;
+    e.revealUntil = this.time + 2;
+    this.broadcast({ k: 'entup', x: round2(e.x), z: round2(e.z) });
+    this.soundAt('ruptura', e.x, e.z);
   }
 
   // ------------------------------------------------------------------ fases
@@ -705,10 +899,11 @@ export class Match {
         break;
       case 'drop':
         if (a.slot !== undefined && p.role === 'survivor' && p.status === 'alive' && !p.hidden) {
-          const k = p.inventory[a.slot];
-          if (k) {
-            p.inventory[a.slot] = null;
-            this.dropItem(p, k);
+          // solta 1 unidade do espaço escolhido
+          const sl = p.inventory[a.slot];
+          if (sl && this.invTake(p, sl.k, 1)) {
+            if (sl.k === 'detector') p.detCharges = 0;
+            this.dropItem(p, sl.k);
           }
         }
         break;
@@ -727,7 +922,8 @@ export class Match {
         if (p.role === 'survivor' && p.status === 'alive') this.startReload(p);
         break;
       case 'weapon':
-        if (p.role === 'survivor' && a.slot !== undefined && a.slot < WEAPON_ORDER.length && WEAPON_ORDER[a.slot] !== p.weapon) {
+        // só troca para armas que o jogador realmente encontrou
+        if (p.role === 'survivor' && a.slot !== undefined && a.slot < WEAPON_ORDER.length && p.owned[WEAPON_ORDER[a.slot]] && WEAPON_ORDER[a.slot] !== p.weapon) {
           p.weapon = WEAPON_ORDER[a.slot];
           p.reloadUntil = 0;
           p.nextShot = Math.max(p.nextShot, this.time + 0.3); // tempo para sacar a arma
@@ -767,6 +963,8 @@ export class Match {
       for (const it of this.items.values())
         cands.push({ x: it.x, z: it.z, prio: 0.6, run: () => this.pickup(p, it) });
       for (const s of this.supplies.values()) cands.push({ x: s.x, z: s.z, prio: 0.7, run: () => this.startCollect(p, s) });
+      for (const gw of this.weapons.values()) cands.push({ x: gw.x, z: gw.z, prio: 0.9, run: () => this.pickupWeapon(p, gw) });
+      { const mb = this.map.medbox; cands.push({ x: mb.x, z: mb.z, half: 1, prio: 0.75, run: () => this.startMedbox(p) }); }
       for (const o of this.players.values())
         if (o !== p && o.role === 'survivor' && o.status === 'downed') cands.push({ x: o.x, z: o.z, prio: 1.2, run: () => this.startChannel(p, { kind: 'revive', target: o.id, label: `Resgatando ${o.name}` }) });
       // portas abrem sozinhas para humanos (ver updateDoors)
@@ -783,35 +981,50 @@ export class Match {
       const cands: Cand[] = [];
       for (const d of this.map.doors) if (!d.secure) cands.push({ x: d.x, z: d.z, half: 1, prio: 0, run: () => this.toggleDoor(p, d.idx) });
       for (const l of this.map.lockers) cands.push({ x: l.x, z: l.z, half: 1, prio: 0.2, run: () => this.searchLocker(p, l.id) });
+      { const mb = this.map.medbox; cands.push({ x: mb.x, z: mb.z, half: 1, prio: 0.5, run: () => this.startMedbox(p) }); }
       const t = pickTarget(p.x, p.z, p.yaw, INTERACT_RANGE + 0.3, cands);
       t?.run();
     }
   }
 
   private pickup(p: MPlayer, it: GroundItem) {
-    if (it.kind === 'detector') {
-      p.detCharges += DETECTOR_CHARGES;
-      if (!p.inventory.includes('detector')) {
-        const slot = p.inventory.indexOf(null);
-        if (slot < 0) {
-          p.detCharges -= DETECTOR_CHARGES;
-          this.toPlayer(p.id, { k: 'msg', text: 'Inventário cheio.', tone: 'warn' });
-          return;
-        }
-        p.inventory[slot] = 'detector';
-      }
-    } else {
-      const slot = p.inventory.indexOf(null);
-      if (slot < 0) {
-        this.toPlayer(p.id, { k: 'msg', text: 'Inventário cheio. Solte algo (segure o número do espaço + G).', tone: 'warn' });
-        return;
-      }
-      p.inventory[slot] = it.kind;
+    if (!this.items.has(it.id)) return;
+    const why = this.invAdd(p, it.kind);
+    if (why) {
+      this.toPlayer(p.id, { k: 'msg', text: why, tone: 'warn' });
+      return;
     }
+    if (it.kind === 'detector') p.detCharges += DETECTOR_CHARGES;
     this.items.delete(it.id);
     this.soundAt('item', it.x, it.z);
-    this.toPlayer(p.id, { k: 'msg', text: `Pegou: ${ITEM_INFO[it.kind].name}`, tone: 'info' });
+    this.toPlayer(p.id, { k: 'msg', text: `Pegou: ${ITEM_INFO[it.kind].name} (${this.invCount(p, it.kind)}/${ITEM_STACK[it.kind]})`, tone: 'info' });
   }
+
+  // ------------------------------------------------------------------ Caixa Médica
+  /**
+   * Caixa Médica: qualquer jogador (humano ou entidade) segura a interação por
+   * MEDBOX_TIME e recupera MEDBOX_HEAL da vida máxima. Não tem limite de usos,
+   * estoque nem recarga — pode usar de novo imediatamente. A cura é calculada
+   * aqui e nunca passa da vida máxima.
+   */
+  private startMedbox(p: MPlayer) {
+    if (p.entDown || (p.role === 'survivor' && p.status !== 'alive')) return;
+    if (!this.near(p, this.map.medbox.x, this.map.medbox.z, MEDBOX_RANGE + (p.role === 'entity' ? ENT.radius : 0))) return;
+    if (p.hp >= p.maxHp) {
+      this.toPlayer(p.id, { k: 'msg', text: 'Sua vida já está cheia.', tone: 'info' });
+      return;
+    }
+    this.startChannel(p, { kind: 'medbox', label: 'Usando a Caixa Médica' });
+  }
+  private finishMedbox(p: MPlayer) {
+    const before = p.hp;
+    p.hp = Math.min(p.maxHp, p.hp + p.maxHp * MEDBOX_HEAL);
+    p.channel = null;
+    p.stats.medboxUses = (p.stats.medboxUses ?? 0) + 1;
+    this.broadcastNear(this.map.medbox.x, this.map.medbox.z, { k: 'medbox', id: p.id, x: round2(this.map.medbox.x), z: round2(this.map.medbox.z), hp: Math.round(p.hp - before) });
+    this.soundAt('cura', this.map.medbox.x, this.map.medbox.z);
+  }
+
 
   private toggleDoor(p: MPlayer, idx: number) {
     if ((this.doorLock.get(idx) ?? 0) > this.time) {
@@ -914,14 +1127,8 @@ export class Match {
 
   private useStation(p: MPlayer, stationId: string, task: Task) {
     if (task.item && task.deliverTo === stationId) {
-      let n = 0;
-      for (let i = 0; i < p.inventory.length; i++) {
-        if (p.inventory[i] === task.item && task.count < task.required) {
-          p.inventory[i] = null;
-          task.count++;
-          n++;
-        }
-      }
+      const n = this.invTake(p, task.item, Math.max(0, task.required - task.count));
+      task.count += n;
       if (!n) {
         this.toPlayer(p.id, { k: 'msg', text: `Você precisa de: ${ITEM_INFO[task.item].name}.`, tone: 'warn' });
         return;
@@ -951,10 +1158,10 @@ export class Match {
   // ------------------------------------------------------------------ itens usáveis
   private useItem(p: MPlayer, slot: number) {
     if (p.role !== 'survivor' || p.status !== 'alive' || p.hidden) return;
-    const k = p.inventory[slot];
+    const k = p.inventory[slot]?.k;
     if (!k) return;
     if (k === 'kit') {
-      if (p.hp >= SURV.hpMax) {
+      if (p.hp >= p.maxHp) {
         this.toPlayer(p.id, { k: 'msg', text: 'Você não está ferido.', tone: 'info' });
         return;
       }
@@ -964,7 +1171,7 @@ export class Match {
       if (p.detectorCd > this.time || p.detCharges <= 0) return;
       p.detCharges--;
       p.detectorCd = this.time + 6;
-      if (p.detCharges <= 0) p.inventory[slot] = null;
+      if (p.detCharges <= 0) this.invTake(p, 'detector', 1);
       const e = this.entity;
       const fakes = this.fakeEchoes.filter((f) => f.until > this.time && this.near(p, f.x, f.z, 18)).map((f) => [round2(f.x), round2(f.z)] as [number, number]);
       let ex = NaN;
@@ -977,7 +1184,7 @@ export class Match {
       for (const o of this.players.values()) if (o.role === 'survivor') this.toPlayer(o.id, { k: 'detector', x: round2(ex), z: round2(ez), fakes, by: p.name });
       this.soundAt('detector', p.x, p.z);
     } else if (k === 'sinalizador') {
-      p.inventory[slot] = null;
+      this.invTake(p, 'sinalizador', 1);
       this.flares.push({ x: p.x, z: p.z, until: this.time + FLARE_TIME });
       this.soundAt('sinalizador', p.x, p.z);
     }
@@ -986,7 +1193,8 @@ export class Match {
   // ------------------------------------------------------------------ entidade
   private tryAttack(e: MPlayer) {
     if (e.role !== 'entity') return;
-    if (e.attackCd > 0 || e.attackPhase !== 'none' || e.active.ruptura > 0 || e.stunUntil > this.time) return;
+    if (e.entDown || e.attackCd > 0 || e.attackPhase !== 'none' || e.active.ruptura > 0 || e.stunUntil > this.time) return;
+    e.channel = null;
     e.attackPhase = 'windup';
     e.attackT = ENT.attackWindup;
     e.camo = false;
@@ -1065,16 +1273,18 @@ export class Match {
     o.outcome = cause === 'disconnect' ? 'disconnected' : 'dead';
     o.stats.deaths = (o.stats.deaths ?? 0) + 1;
     for (let i = 0; i < o.inventory.length; i++) {
-      const k = o.inventory[i];
-      if (k) this.dropItem(o, k);
+      const sl = o.inventory[i];
+      if (sl) for (let n = 0; n < sl.n; n++) this.dropItem(o, sl.k);
       o.inventory[i] = null;
     }
+    this.dropWeapons(o);
     this.broadcast({ k: 'death', target: o.id, cause });
     this.spectate(o.id, 1);
   }
 
   private tryAbility(e: MPlayer, id: AbilityId, variant?: EcoType) {
-    if (e.role !== 'entity' || e.stunUntil > this.time || e.attackPhase !== 'none') return;
+    if (e.role !== 'entity' || e.entDown || e.stunUntil > this.time || e.attackPhase !== 'none') return;
+    e.channel = null;
     if (e.cd[id] > 0 || e.active[id] > 0) return;
     const def = ABILITIES[id];
     const lvl = this.resonanceLevel(e);
@@ -1261,13 +1471,19 @@ export class Match {
         }
         p.channelT += DT * p.mods.interactMult;
         if (p.channelT >= SUPPLY_COLLECT_TIME) this.finishCollect(p, s);
+      } else if (ch.kind === 'medbox') {
+        const mb = this.map.medbox;
+        if (p.entDown || !this.near(p, mb.x, mb.z, MEDBOX_RANGE + (p.role === 'entity' ? ENT.radius : 0) + 0.3) || (p.role === 'survivor' && p.status !== 'alive')) {
+          p.channel = null;
+          continue;
+        }
+        p.channelT += DT * p.mods.interactMult;
+        if (p.channelT >= MEDBOX_TIME) this.finishMedbox(p);
       } else if (ch.kind === 'heal') {
         p.channelT += DT * p.mods.interactMult;
         if (p.channelT >= SURV.medkitTime) {
-          const slot = p.inventory.indexOf('kit');
-          if (slot >= 0) {
-            p.inventory[slot] = null;
-            p.hp = Math.min(SURV.hpMax, p.hp + SURV.medkitHeal);
+          if (this.invTake(p, 'kit', 1)) {
+            p.hp = Math.min(p.maxHp, p.hp + SURV.medkitHeal);
             p.stats.heals = (p.stats.heals ?? 0) + 1;
             p.score += 50;
             this.soundAt('cura', p.x, p.z);
@@ -1444,13 +1660,14 @@ export class Match {
 
   private updateEntity(e: MPlayer) {
     // queimadura do lança-chamas e regeneração
-    if (e.burnUntil > this.time) {
+    this.updateEntityDown(e);
+    if (e.burnUntil > this.time && !e.entDown) {
       const by = this.players.get(e.burnBy ?? '') ?? e;
-      this.damageEntity(FLAMER.burnDps * DT, by, { x: e.x, y: 1.3, z: e.z }, false);
+      // queimadura do lança-chamas conta como fogo (pode matar de vez)
+      this.damageEntity(FLAMER.burnDps * DT * by.mods.attackMult, by, { x: e.x, y: 1.3, z: e.z }, false, true);
       if (this.ended) return;
-    } else if (e.hp < e.maxHp && this.time - e.lastDamageAt > ENTITY_REGEN_DELAY) {
-      e.hp = Math.min(e.maxHp, e.hp + ENTITY_REGEN * DT);
     }
+    // sem regeneração automática: a entidade só recupera vida na Caixa Médica (ou ao levantar)
     if (e.attackCd > 0) e.attackCd = Math.max(0, e.attackCd - DT);
     if (e.attackPhase !== 'none') {
       e.attackT -= DT;
@@ -1469,7 +1686,7 @@ export class Match {
     }
     // camuflagem: parado ou espreitando por alguns segundos
     const inFlare = this.flares.some((f) => this.near(e, f.x, f.z, FLARE_RADIUS));
-    if (e.speed <= ENT.camoMaxSpeed && e.attackPhase === 'none' && e.active.ruptura === 0 && !inFlare && e.revealUntil <= this.time) {
+    if (!e.entDown && e.speed <= ENT.camoMaxSpeed && e.attackPhase === 'none' && e.active.ruptura === 0 && !inFlare && e.revealUntil <= this.time) {
       e.camoT += DT;
       if (e.camoT >= ENT.camoDelay) e.camo = true;
     } else {
@@ -1571,9 +1788,15 @@ export class Match {
     if (p.role === 'survivor') {
       if (p.weapon === 'fuzil') f |= PF.WPN_RIFLE;
       if (p.weapon === 'lanca') f |= PF.WPN_FLAME;
+      if (p.weapon === 'escopeta') f |= PF.WPN_SHOTGUN;
+      if (!p.weapon) f |= PF.UNARMED;
       if (p.reloadUntil > 0) f |= PF.RELOAD;
       if (p.channel?.kind === 'supply') f |= PF.COLLECT;
-    } else if (p.burnUntil > this.time) f |= PF.BURNING;
+    } else {
+      if (p.burnUntil > this.time) f |= PF.BURNING;
+      if (p.entDown) f |= PF.DOWNED;
+    }
+    if (p.channel?.kind === 'medbox') f |= PF.MEDBOX;
     return f;
   }
 
@@ -1641,6 +1864,12 @@ export class Match {
         const d2 = dist2(v.x, v.z, sp.x, sp.z);
         if (d2 < 9 || (d2 < 30 * 30 && lineOfSight(this.grid, v.x, v.z, sp.x, sp.z))) sup.push([sp.id, sp.kind, round2(sp.x), round2(sp.z), sp.claimedBy ? 1 : 0]);
       }
+      // armas no chão: mesma regra de visão dos itens (o mesmo estado para todos)
+      const gw: Snapshot['gw'] = [];
+      for (const w of this.weapons.values()) {
+        const d2 = dist2(v.x, v.z, w.x, w.z);
+        if (d2 < 9 || (d2 < 30 * 30 && lineOfSight(this.grid, v.x, v.z, w.x, w.z))) gw.push([w.id, w.w, round2(w.x), round2(w.z)]);
+      }
       let threat = 0;
       let trails: [number, number, number][] = [];
       if (viewer.role === 'survivor') {
@@ -1656,7 +1885,7 @@ export class Match {
       const ch = viewer.channel;
       let chView: { label: string; p: number } | null = null;
       if (ch) {
-        const total = ch.kind === 'revive' ? SURV.reviveTime : ch.kind === 'heal' ? SURV.medkitTime : ch.kind === 'supply' ? SUPPLY_COLLECT_TIME : 1;
+        const total = ch.kind === 'revive' ? SURV.reviveTime : ch.kind === 'heal' ? SURV.medkitTime : ch.kind === 'supply' ? SUPPLY_COLLECT_TIME : ch.kind === 'medbox' ? MEDBOX_TIME : 1;
         chView = { label: ch.label, p: Math.min(1, ch.kind === 'station' ? viewer.channelT : viewer.channelT / total) };
         if (ch.kind === 'station' && (this.jamUntil.get(ch.station) ?? 0) > this.time) chView.label += ' — INTERFERÊNCIA';
       }
@@ -1668,12 +1897,13 @@ export class Match {
           x: viewer.x,
           z: viewer.z,
           ack: viewer.lastSeq,
-          hp: viewer.role === 'entity' ? Math.ceil(viewer.hp) : viewer.hp,
+          hp: Math.ceil(viewer.hp),
+          maxHp: viewer.maxHp,
           st: viewer.status,
           stamina: viewer.stamina,
           exh: viewer.exhausted,
           regen: viewer.regenDelay,
-          inv: viewer.inventory,
+          inv: viewer.inventory.map((sl) => (sl ? { ...sl } : null)),
           det: viewer.detCharges,
           ch: chView,
           mult: params.mult,
@@ -1697,10 +1927,11 @@ export class Match {
         jam,
         pods,
         sup,
-        eh: [Math.ceil(e.hp), e.maxHp],
+        eh: [Math.ceil(e.hp), e.maxHp, e.entDown ? round2(Math.max(0, e.downUntil - this.time)) : 0],
+        gw,
       };
       if (viewer.role === 'survivor') {
-        snap.you.wpn = { sel: viewer.weapon, mag: { ...viewer.mag }, res: { ...viewer.reserve }, fuel: round2(viewer.fuel), reload: viewer.reloadUntil > 0 ? round2(viewer.reloadUntil - this.time) : 0 };
+        snap.you.wpn = { sel: viewer.weapon, own: WEAPON_ORDER.filter((w) => viewer.owned[w]), mag: { ...viewer.mag }, res: { ...viewer.reserve }, fuel: round2(viewer.fuel), reload: viewer.reloadUntil > 0 ? round2(viewer.reloadUntil - this.time) : 0 };
       }
       if (viewer.role === 'entity') {
         const lvl = this.resonanceLevel(viewer);
@@ -1717,12 +1948,23 @@ export class Match {
   }
 
   /** Somente testes: altera o estado de um jogador (não acessível pela rede). */
-  debugSet(id: string, patch: Partial<Pick<MPlayer, 'x' | 'z' | 'yaw' | 'pitch' | 'hp' | 'fuel' | 'weapon' | 'stamina' | 'status'>> & { reserve?: Partial<MPlayer['reserve']>; mag?: Partial<MPlayer['mag']> }) {
+  debugSet(id: string, patch: Partial<Pick<MPlayer, 'x' | 'z' | 'yaw' | 'pitch' | 'hp' | 'fuel' | 'weapon' | 'stamina' | 'status'>> & { reserve?: Partial<MPlayer['reserve']>; mag?: Partial<MPlayer['mag']>; owned?: Partial<MPlayer['owned']> }) {
     const p = this.players.get(id)!;
-    const { reserve, mag, ...rest } = patch;
+    const { reserve, mag, owned, ...rest } = patch;
     Object.assign(p, rest);
     if (reserve) Object.assign(p.reserve, reserve);
     if (mag) Object.assign(p.mag, mag);
+    if (owned) Object.assign(p.owned, owned);
+  }
+  /** Somente testes: coloca uma arma no chão. */
+  debugAddWeapon(w: WeaponId, x: number, z: number, ammo?: number) {
+    return this.placeWeapon(w, x, z, ammo ?? (w === 'lanca' ? FLAMER.pickupFuel : GUNS[w].pickupMag));
+  }
+  /** Somente testes: coloca um item no chão. */
+  debugAddItem(kind: ItemKind, x: number, z: number) {
+    const id = `i${++this.itemSeq}`;
+    this.items.set(id, { id, kind, x, z });
+    return id;
   }
   /** Somente testes: coloca uma caixa de suprimento num ponto. */
   debugAddSupply(kind: SupplyKind, x: number, z: number, amount = SUPPLY_INFO[kind].amount) {
@@ -1738,7 +1980,8 @@ export class Match {
       stage: this.stage,
       tasks: this.tasks,
       items: [...this.items.values()],
-      players: [...this.players.values()].map((p) => ({ id: p.id, role: p.role, x: p.x, z: p.z, hp: p.hp, maxHp: p.maxHp, status: p.status, hidden: p.hidden, inv: p.inventory, weapon: p.weapon, mag: { ...p.mag }, reserve: { ...p.reserve }, fuel: p.fuel, reloading: p.reloadUntil > 0, stamina: p.stamina, attackCd: p.attackCd, cd: { ...p.cd }, mods: { ...p.mods } })),
+      weapons: [...this.weapons.values()].map((w) => ({ ...w })),
+      players: [...this.players.values()].map((p) => ({ id: p.id, role: p.role, x: p.x, z: p.z, hp: p.hp, maxHp: p.maxHp, status: p.status, hidden: p.hidden, inv: p.inventory.map((sl) => (sl ? { ...sl } : null)), weapon: p.weapon, mag: { ...p.mag }, reserve: { ...p.reserve }, fuel: p.fuel, owned: { ...p.owned }, entDown: p.entDown, downUntil: p.downUntil, reloading: p.reloadUntil > 0, stamina: p.stamina, attackCd: p.attackCd, cd: { ...p.cd }, mods: { ...p.mods } })),
       supplies: [...this.supplies.values()].map((x) => ({ ...x })),
       supplyRespawnAt: [...this.supplyRespawnAt],
       podsReady: [...this.podsReady],

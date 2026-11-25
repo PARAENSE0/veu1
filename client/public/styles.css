@@ -1648,3 +1648,97 @@ table.rank tr.me td {
 .hud-bl {
   z-index: 5;
 }
+
+/* ---------------------------------------------------------------- v0.3 */
+.role-reveal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.85));
+  z-index: 20;
+  pointer-events: none;
+  transition: opacity 0.2s;
+}
+.role-card {
+  text-align: center;
+  padding: 18px 28px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(3, 10, 14, 0.85);
+  max-width: 92vw;
+}
+.role-card .role-title {
+  font-size: clamp(24px, 5vw, 44px);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  margin: 6px 0;
+}
+.role-card.entity .role-title {
+  color: var(--entity, #e0634f);
+  text-shadow: 0 0 18px rgba(224, 99, 79, 0.6);
+}
+.role-card.survivor .role-title {
+  color: var(--accent);
+}
+.role-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 6px;
+  width: min(760px, 92vw);
+}
+.role-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(3, 10, 14, 0.8);
+  border-left: 3px solid var(--accent);
+  font-size: 13px;
+  transition: opacity 0.3s, transform 0.3s;
+}
+.role-row.entity {
+  border-left-color: var(--entity, #e0634f);
+}
+.role-row.entity b {
+  color: var(--entity, #e0634f);
+}
+.slot .qty {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+.slot .qty.full {
+  color: var(--warn, #f2b84b);
+}
+.ent-down {
+  animation: lowst 0.6s ease-in-out infinite alternate;
+}
+.minimap-room {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #cfe9ec;
+  padding: 3px 2px 0;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.week-timer {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+@media (max-height: 520px) {
+  .role-list {
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .role-row {
+    font-size: 11px;
+    padding: 3px 6px;
+  }
+}

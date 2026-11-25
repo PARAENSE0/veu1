@@ -202,6 +202,10 @@ export interface Stats {
   timesHidden: number;
   echoes: number;
   playSeconds: number;
+  /** vezes que derrubou a entidade (sobrevivente) */
+  entityDowns: number;
+  /** usos da Caixa Médica */
+  medboxUses: number;
 }
 
 export const EMPTY_STATS: Stats = {
@@ -222,6 +226,8 @@ export const EMPTY_STATS: Stats = {
   timesHidden: 0,
   echoes: 0,
   playSeconds: 0,
+  entityDowns: 0,
+  medboxUses: 0,
 };
 
 export interface Achievement {

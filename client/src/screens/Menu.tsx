@@ -61,7 +61,7 @@ export function MainMenu() {
               {profile.username} {profile.guest && <span className="tag warn">convidado</span>}
             </div>
             <div className="mono muted" style={{ fontSize: 11 }}>
-              {profile.maxLevel ? `NÍVEL MÁXIMO ${profile.level}` : `NÍVEL ${profile.level} · ${profile.levelInto}/${profile.levelNeed} XP`}
+              {profile.maxLevel ? `NÍVEL MÁXIMO ${profile.level}` : `NÍVEL ${profile.level} · ${profile.levelInto}/${profile.levelNeed} XP`} · {profile.totalXp.toLocaleString('pt-BR')} XP TOTAL · {profile.coins.toLocaleString('pt-BR')} ◈
             </div>
           </div>
           <span className={`tag ${status === 'online' ? 'good' : status === 'connecting' ? 'warn' : 'danger'}`}>{status === 'online' ? 'online' : status === 'connecting' ? 'conectando' : 'offline'}</span>

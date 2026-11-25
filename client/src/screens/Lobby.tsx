@@ -1,9 +1,8 @@
-/** Lobby da sala: jogadores, preferências de função, prontidão, chat, voz e início. */
+/** Lobby da sala: jogadores, prontidão, chat, voz e início (a função é sorteada pelo servidor). */
 import { useEffect, useRef, useState } from 'react';
 import { ABILITIES, MAX_PLAYERS, MIN_PLAYERS } from '../../../shared/constants';
 import { MAP_LIST } from '../../../shared/map';
 import { resolveAppearance } from '../../../shared/progression';
-import type { RolePref } from '../../../shared/protocol';
 import { Voice, type MicState } from '../game/voice';
 import { net } from '../net';
 import { voice } from '../session';
@@ -12,7 +11,6 @@ import { go, toast, useApp } from '../store';
 import { Backdrop, Button, enterFullscreen, Modal, rgbCss, Tabs, Toggle, TopBar, type Ev } from '../ui/kit';
 import { CharacterPreview } from '../ui/Preview';
 
-const PREF_LABEL: Record<RolePref, string> = { any: 'Qualquer', survivor: 'Sobrevivente', entity: 'Entidade' };
 
 export function useVoiceState() {
   const [, force] = useState(0);
@@ -133,7 +131,7 @@ export function LobbyScreen() {
                         {p.name} {p.host && <span className="tag warn">anfitrião</span>} {p.guest && <span className="tag">convidado</span>} {!p.connected && <span className="tag danger">desconectado</span>}
                       </div>
                       <div className="mono muted" style={{ fontSize: 11 }}>
-                        NÍVEL {p.level} · PREFERÊNCIA: {PREF_LABEL[p.pref].toUpperCase()}
+                        NÍVEL {p.level}
                       </div>
                     </div>
                     {p.id !== profile.id && v && (
@@ -157,13 +155,9 @@ export function LobbyScreen() {
               ) : (
                 <div className="row">
                   <div className="grow">
-                    <div className="label">Quero jogar como</div>
-                    <div className="row" style={{ marginTop: 6 }}>
-                      {(['any', 'survivor', 'entity'] as RolePref[]).map((pr) => (
-                        <Button key={pr} small kind={me?.pref === pr ? 'primary' : undefined} onClick={() => net.send({ t: 'room:pref', pref: pr })}>
-                          {PREF_LABEL[pr]}
-                        </Button>
-                      ))}
+                    <div className="label">Função</div>
+                    <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                      Sorteada no início: 1 entidade e até {MAX_PLAYERS - 1} humanos. Ninguém escolhe.
                     </div>
                   </div>
                   {isHost ? (
@@ -189,7 +183,7 @@ export function LobbyScreen() {
                 </div>
               )}
               <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                A entidade é sorteada pelo servidor entre quem a prefere (ou “Qualquer”), priorizando quem foi entidade menos vezes nesta sala.
+                O servidor sorteia a entidade entre todos; quem já foi entidade mais vezes nesta sala fica de fora do sorteio até os outros também serem.
               </div>
             </div>
           </div>

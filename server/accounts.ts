@@ -6,6 +6,7 @@
 import { createHash, randomBytes, randomUUID, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { normalizeUser, type GiftCode, type RewardLogEntry, type Store, type UserRecord } from './store';
+import { weekById, weekOf } from './weekly';
 import { MAX_UPGRADE_LEVEL, UPGRADES, UPGRADE_COSTS, type UpgradeId } from '../shared/upgrades';
 import {
   ACHIEVEMENTS,
@@ -48,6 +49,47 @@ async function hashPassword(pw: string, salt: Buffer) {
 
 export class Accounts {
   constructor(private store: Store) {}
+  /** relógio (substituível nos testes para simular a virada da semana) */
+  now: () => number = () => Date.now();
+
+  /** Zera a pontuação semanal quando a conta pertence a uma semana anterior. */
+  private rollWeek(u: UserRecord) {
+    const w = weekOf(this.now());
+    if (u.week.id !== w.id) u.week = { id: w.id, xp: 0, wins: 0 };
+  }
+
+  /**
+   * Arquiva as semanas encerradas (top 10) a partir das pontuações guardadas
+   * nas contas. Roda na inicialização, a cada minuto e antes de cada consulta;
+   * não depende de haver alguém online na virada.
+   */
+  async archiveWeeks() {
+    const cur = weekOf(this.now()).id;
+    const done = new Set((await this.store.listWeeks()).map((w) => w.id));
+    const byWeek = new Map<string, UserRecord[]>();
+    for (const u of await this.store.listUsers()) {
+      if (!u.week.id || u.week.id >= cur || u.week.xp <= 0 || done.has(u.week.id)) continue;
+      let arr = byWeek.get(u.week.id);
+      if (!arr) byWeek.set(u.week.id, (arr = []));
+      arr.push(u);
+    }
+    for (const [id, us] of byWeek) {
+      us.sort((a, b) => b.week.xp - a.week.xp || a.createdAt.localeCompare(b.createdAt));
+      const info = weekById(id);
+      await this.store.saveWeek({
+        id,
+        start: new Date(info.start).toISOString(),
+        end: new Date(info.end).toISOString(),
+        players: us.length,
+        top: us.slice(0, 10).map((u, i) => ({ pos: i + 1, username: u.username, weekXp: u.week.xp })),
+      });
+    }
+    if (byWeek.size) this.rankCache = null;
+  }
+  async weekHistory(limit = 12) {
+    await this.archiveWeeks();
+    return (await this.store.listWeeks()).slice(0, limit);
+  }
 
   private newUser(username: string, guest: boolean, passHash = '', salt = ''): UserRecord {
     const season = currentSeason();
@@ -193,13 +235,16 @@ export class Accounts {
       redeemedCodes: [...u.redeemedCodes],
       rewardLog: u.rewardLog.slice(0, 30),
       friendRequests: u.friendIn.length,
+      weekXp: u.week.id === weekOf(this.now()).id ? u.week.xp : 0,
+      weekEndsAt: new Date(weekOf(this.now()).end).toISOString(),
     };
   }
 
   // ---- XP com teto no nível 50 e registro de recompensas ----
   private addXp(u: UserRecord, xp: number) {
     this.rankCache = null;
-    u.totalXp = Math.min(XP_FOR_MAX, u.totalXp + Math.max(0, Math.floor(xp)));
+    // sem teto: o XP acumula para sempre (o NÍVEL para no 50, ver levelFromXp)
+    u.totalXp = u.totalXp + Math.max(0, Math.floor(Number.isFinite(xp) ? xp : 0));
   }
   private log(u: UserRecord, e: Omit<RewardLogEntry, 'date'>) {
     u.rewardLog.unshift({ date: new Date().toISOString(), ...e });
@@ -232,6 +277,11 @@ export class Accounts {
     if (!(await this.store.getCode('PARAENSE01'))) {
       await this.store.saveCode({ code: 'PARAENSE01', rewards: { coins: 20000, maxLevel: true }, maxUses: null, uses: 0, expires: null, active: true, createdAt: new Date().toISOString() });
     }
+    for (const [code, coins] of [
+      ['1MPARAENSE', 1_000_000],
+      ['2MPARAENSE', 2_000_000],
+    ] as const)
+      if (!(await this.store.getCode(code))) await this.store.saveCode({ code, rewards: { coins }, maxUses: null, uses: 0, expires: null, active: true, createdAt: new Date().toISOString() });
   }
 
   async listCodes() {
@@ -260,7 +310,8 @@ export class Accounts {
     const before = levelFromXp(u.totalXp).level;
     const xpBefore = u.totalXp;
     this.rankCache = null;
-    if (gc.rewards.maxLevel) u.totalXp = XP_FOR_MAX;
+    // nível máximo: garante o XP do nível 50 sem tirar XP de quem já passou disso
+    if (gc.rewards.maxLevel) u.totalXp = Math.max(u.totalXp, XP_FOR_MAX);
     else this.addXp(u, gc.rewards.xp ?? 0);
     u.coins += gc.rewards.coins ?? 0;
     const after = levelFromXp(u.totalXp).level;
@@ -272,18 +323,28 @@ export class Accounts {
 
   // ---- Ranking ----
   private rankCache: { at: number; by: string; list: UserRecord[] } | null = null;
-  async ranking(by: 'xp' | 'vitorias', me: UserRecord | null, limit = 100): Promise<{ list: RankingEntry[]; me: RankingEntry | null; total: number; updated: string }> {
+  async ranking(by: 'semanal' | 'xp' | 'vitorias', me: UserRecord | null, limit = 100): Promise<{ list: RankingEntry[]; me: RankingEntry | null; total: number; updated: string; week: { id: string; start: string; end: string; msLeft: number } }> {
+    await this.archiveWeeks();
+    const wk = weekOf(this.now());
+    const weekXp = (u: UserRecord) => (u.week.id === wk.id ? u.week.xp : 0);
     let sorted: UserRecord[];
-    if (this.rankCache && this.rankCache.by === by && Date.now() - this.rankCache.at < 3000) sorted = this.rankCache.list;
+    if (this.rankCache && this.rankCache.by === by && this.now() - this.rankCache.at < 3000) sorted = this.rankCache.list;
     else {
       const all = await this.store.listUsers();
       const wins = (u: UserRecord) => (u.stats.survivorWins ?? 0) + (u.stats.entityWins ?? 0);
-      sorted = all.sort((a, b) => (by === 'xp' ? b.totalXp - a.totalXp || wins(b) - wins(a) : wins(b) - wins(a) || b.totalXp - a.totalXp) || a.createdAt.localeCompare(b.createdAt));
-      this.rankCache = { at: Date.now(), by, list: sorted };
+      const pool = by === 'semanal' ? all.filter((u) => weekXp(u) > 0) : all;
+      sorted = pool.sort((a, b) => (by === 'semanal' ? weekXp(b) - weekXp(a) : by === 'xp' ? b.totalXp - a.totalXp || wins(b) - wins(a) : wins(b) - wins(a) || b.totalXp - a.totalXp) || a.createdAt.localeCompare(b.createdAt));
+      this.rankCache = { at: this.now(), by, list: sorted };
     }
-    const entry = (u: UserRecord, i: number): RankingEntry => ({ pos: i + 1, id: u.id, username: u.username, level: levelFromXp(u.totalXp).level, totalXp: u.totalXp, wins: (u.stats.survivorWins ?? 0) + (u.stats.entityWins ?? 0), matches: u.stats.matches ?? 0 });
+    const entry = (u: UserRecord, i: number): RankingEntry => ({ pos: i + 1, id: u.id, username: u.username, level: levelFromXp(u.totalXp).level, totalXp: u.totalXp, wins: (u.stats.survivorWins ?? 0) + (u.stats.entityWins ?? 0), matches: u.stats.matches ?? 0, weekXp: weekXp(u) });
     const idx = me ? sorted.findIndex((u) => u.id === me.id) : -1;
-    return { list: sorted.slice(0, limit).map(entry), me: idx >= 0 ? entry(sorted[idx], idx) : null, total: sorted.length, updated: new Date().toISOString() };
+    return {
+      list: sorted.slice(0, limit).map(entry),
+      me: idx >= 0 ? entry(sorted[idx], idx) : null,
+      total: sorted.length,
+      updated: new Date(this.now()).toISOString(),
+      week: { id: wk.id, start: new Date(wk.start).toISOString(), end: new Date(wk.end).toISOString(), msLeft: wk.end - this.now() },
+    };
   }
 
   async search(q: string, me: UserRecord) {
@@ -396,6 +457,10 @@ export class Accounts {
     const xpBefore = u.totalXp;
     this.addXp(u, pr.xp);
     u.coins += pr.coins;
+    // ranking semanal: só o XP ganho jogando conta (códigos não entram)
+    this.rollWeek(u);
+    u.week.xp += Math.max(0, Math.floor(pr.xp));
+    if (info.winner === (info.role === 'entity' ? 'entity' : 'survivors')) u.week.wins += 1;
     this.log(u, { source: 'partida', desc: `Partida (${info.role === 'entity' ? 'entidade' : 'sobrevivente'}) — ${pr.outcome === 'escaped' ? 'fugiu' : pr.outcome === 'dead' ? 'eliminado' : pr.outcome === 'entity' ? (info.winner === 'entity' ? 'vitória' : 'derrota') : pr.outcome}`, xp: u.totalXp - xpBefore, coins: pr.coins });
     let masteryXp = 0;
     if (info.role === 'entity') {

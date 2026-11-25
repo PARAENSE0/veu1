@@ -5,7 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { MAX_LEVEL } from '../../../shared/progression';
-import type { FriendInfo, Profile, RankingEntry, RewardLogEntryView } from '../../../shared/protocol';
+import type { FriendInfo, Profile, RankingEntry, RewardLogEntryView, WeekHistory } from '../../../shared/protocol';
 import { HUMAN_UPGRADES, MAX_UPGRADE_LEVEL, MONSTER_UPGRADES, UPGRADES, UPGRADE_COSTS, type UpgradeId } from '../../../shared/upgrades';
 import { api, ApiError, net } from '../net';
 import { setProfile } from '../session';
@@ -21,7 +21,7 @@ export function LevelBar(p: { profile: Profile }) {
   return (
     <div>
       <div className="label">
-        {pr.maxLevel ? `NÍVEL MÁXIMO (${MAX_LEVEL}) — continue ganhando fragmentos` : `Nível ${pr.level} · ${pr.levelInto}/${pr.levelNeed} XP para o ${pr.level + 1}`}
+        {pr.maxLevel ? `NÍVEL MÁXIMO (${MAX_LEVEL}) — o XP continua somando no ranking` : `Nível ${pr.level} · ${pr.levelInto}/${pr.levelNeed} XP para o ${pr.level + 1}`}
       </div>
       <Bar value={pr.maxLevel ? 1 : pr.levelInto / Math.max(1, pr.levelNeed)} color={pr.maxLevel ? 'var(--accent)' : undefined} />
     </div>
@@ -85,6 +85,7 @@ export function ProfileScreen() {
                 <span>conquistas</span>
               </div>
             </div>
+            <WeekLine profile={profile} />
             {profile.guest && (
               <p className="muted" style={{ fontSize: 12 }}>
                 Contas de convidado não guardam progresso permanente, melhorias, amigos ou códigos. Crie uma conta para salvar tudo.
@@ -130,15 +131,43 @@ export function ProfileScreen() {
   );
 }
 
+function WeekLine(p: { profile: Profile }) {
+  const left = useCountdown(p.profile.weekEndsAt);
+  return (
+    <div className="muted" style={{ fontSize: 12, marginTop: 10 }}>
+      Ranking semanal: <b>{p.profile.weekXp.toLocaleString('pt-BR')} XP</b> nesta semana · reinicia em <span className="mono">{left}</span>
+    </div>
+  );
+}
+
 // ------------------------------------------------------------------ RANKING
+type RankData = { list: RankingEntry[]; me: RankingEntry | null; total: number; updated: string; week: { id: string; start: string; end: string; msLeft: number } };
+
+/** "3 d 04 h 12 min" até o fim da semana (contagem regressiva ao vivo). */
+export function useCountdown(endIso: string | undefined) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const i = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(i);
+  }, []);
+  if (!endIso) return '';
+  const ms = Math.max(0, new Date(endIso).getTime() - now);
+  const d = Math.floor(ms / 86_400_000);
+  const h = Math.floor((ms % 86_400_000) / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const sec = Math.floor((ms % 60_000) / 1000);
+  return d > 0 ? `${d} d ${String(h).padStart(2, '0')} h ${String(m).padStart(2, '0')} min` : `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
 export function RankingScreen() {
-  const [by, setBy] = useState<'xp' | 'vitorias'>('xp');
-  const [data, setData] = useState<{ list: RankingEntry[]; me: RankingEntry | null; total: number; updated: string } | null>(null);
+  const [by, setBy] = useState<'semanal' | 'xp' | 'vitorias'>('semanal');
+  const [data, setData] = useState<RankData | null>(null);
+  const [hist, setHist] = useState<WeekHistory[]>([]);
   const [err, setErr] = useState('');
   useEffect(() => {
     let alive = true;
     const load = () =>
-      api<{ list: RankingEntry[]; me: RankingEntry | null; total: number; updated: string }>(`/api/ranking?by=${by}`, undefined, token())
+      api<RankData>(`/api/ranking?by=${by}`, undefined, token())
         .then((d) => alive && (setData(d), setErr('')))
         .catch((e) => alive && setErr(errMsg(e)));
     void load();
@@ -148,7 +177,14 @@ export function RankingScreen() {
       clearInterval(i);
     };
   }, [by]);
+  useEffect(() => {
+    api<{ weeks: WeekHistory[] }>('/api/ranking/history')
+      .then((r) => setHist(r.weeks))
+      .catch(() => {});
+  }, [data?.week.id]);
   const meId = useApp((s) => s.profile?.id);
+  const left = useCountdown(data?.week.end);
+  const fmtDay = (iso: string) => new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
   return (
     <div className="screen">
       <Backdrop />
@@ -158,10 +194,17 @@ export function RankingScreen() {
           value={by}
           onChange={setBy}
           tabs={[
-            ['xp', 'Por nível / XP'],
-            ['vitorias', 'Por vitórias'],
+            ['semanal', 'Semanal'],
+            ['xp', 'Geral (XP total)'],
+            ['vitorias', 'Vitórias'],
           ]}
         />
+        {data && (
+          <div className="row" style={{ marginTop: 8 }}>
+            <span className="tag accent week-timer">Temporada semanal {fmtDay(data.week.start)} – {fmtDay(new Date(new Date(data.week.end).getTime() - 1).toISOString())} · reinicia em {left}</span>
+            <span className="muted" style={{ fontSize: 12 }}>O placar semanal zera toda segunda-feira às 00:00 (Brasília). XP, nível, moedas e melhorias nunca são apagados.</span>
+          </div>
+        )}
         {err && <p className="tag danger">{err}</p>}
         <div className="panel" style={{ marginTop: 10 }}>
           <table className="rank">
@@ -170,7 +213,7 @@ export function RankingScreen() {
                 <th>#</th>
                 <th>Jogador</th>
                 <th>Nível</th>
-                <th>XP</th>
+                <th>{by === 'semanal' ? 'XP da semana' : 'XP total'}</th>
                 <th>Vitórias</th>
                 <th>Partidas</th>
               </tr>
@@ -181,7 +224,7 @@ export function RankingScreen() {
                   <td className="mono">{e.pos <= 3 ? ['🥇', '🥈', '🥉'][e.pos - 1] : e.pos}</td>
                   <td>{e.username}</td>
                   <td>{e.level}</td>
-                  <td className="mono">{e.totalXp.toLocaleString('pt-BR')}</td>
+                  <td className="mono">{(by === 'semanal' ? e.weekXp : e.totalXp).toLocaleString('pt-BR')}</td>
                   <td>{e.wins}</td>
                   <td>{e.matches}</td>
                 </tr>
@@ -189,7 +232,7 @@ export function RankingScreen() {
               {data?.list.length === 0 && (
                 <tr>
                   <td colSpan={6} className="muted">
-                    Nenhum jogador registrado ainda.
+                    {by === 'semanal' ? 'Ninguém pontuou nesta semana ainda. Jogue uma partida para entrar no placar!' : 'Nenhum jogador registrado ainda.'}
                   </td>
                 </tr>
               )}
@@ -200,8 +243,30 @@ export function RankingScreen() {
               <span className="tag accent">Sua posição: {data.me.pos}º</span>
             </div>
           )}
-          {!data?.me && <p className="muted" style={{ fontSize: 12 }}>Convidados não entram no ranking. Crie uma conta para competir.</p>}
+          {!data?.me && by !== 'semanal' && <p className="muted" style={{ fontSize: 12 }}>Convidados não entram no ranking. Crie uma conta para competir.</p>}
+          {!data?.me && by === 'semanal' && <p className="muted" style={{ fontSize: 12 }}>Você ainda não pontuou nesta semana (convidados não entram no ranking).</p>}
         </div>
+        {hist.length > 0 && (
+          <div className="panel" style={{ marginTop: 10 }}>
+            <h3>Semanas anteriores</h3>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+              {hist.map((w) => (
+                <div key={w.id}>
+                  <div className="label">
+                    {fmtDay(w.start)} – {fmtDay(new Date(new Date(w.end).getTime() - 1).toISOString())} · {w.players} jogadores
+                  </div>
+                  {w.top.slice(0, 3).map((t) => (
+                    <div key={t.pos} className="row" style={{ fontSize: 13 }}>
+                      <span>{['🥇', '🥈', '🥉'][t.pos - 1]}</span>
+                      <span className="grow">{t.username}</span>
+                      <span className="mono muted">{t.weekXp.toLocaleString('pt-BR')} XP</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

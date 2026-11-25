@@ -94,6 +94,8 @@ export function buildWorldGeom(m: MapDef): Geom {
             g.box(x0, 0, z0 + 0.2, x0 + CELL, 1.0, z0 + 1.8, LAYER.WALL, 0.5);
             g.box(x0, 1.0, z0 + 0.15, x0 + CELL, 1.08, z0 + 1.85, LAYER.PLAIN, 1);
             break;
+          case PROP.MEDBOX:
+            break; // desenhada a cada quadro por drawMedbox (luz/animação de uso)
           default:
             g.box(x0 + 0.25, 0, z0 + 0.25, x0 + 1.75, 1.1, z0 + 1.75, LAYER.CRATE, 0.66);
             g.box(x0 + 0.5, 1.1, z0 + 0.5, x0 + 1.4, 1.7, z0 + 1.4, LAYER.CRATE, 1);

@@ -41,6 +41,29 @@ function staticLayer(map: MapDef, px: number) {
       });
       if (near) g.fillRect(x * px, z * px, px, px);
     }
+  // nomes das salas e corredores (os mesmos do mapa real); só quando há espaço para ler
+  if (px >= 5) {
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    for (const zn of map.zones) {
+      const w = (zn.x1 - zn.x0 + 1) * px;
+      const h = (zn.z1 - zn.z0 + 1) * px;
+      const cx = zn.x0 * px + w / 2;
+      const cz = zn.z0 * px + h / 2;
+      const name = zn.name.toUpperCase();
+      let size = Math.min(px * 1.6, 15);
+      g.font = `600 ${size}px system-ui, sans-serif`;
+      while (size > 7 && g.measureText(name).width > w * 0.92) {
+        size -= 1;
+        g.font = `600 ${size}px system-ui, sans-serif`;
+      }
+      g.lineWidth = 3;
+      g.strokeStyle = 'rgba(0,0,0,0.85)';
+      g.fillStyle = 'rgba(220,240,242,0.9)';
+      g.strokeText(name, cx, cz);
+      g.fillText(name, cx, cz);
+    }
+  }
   // áreas de fuga
   g.strokeStyle = 'rgba(120,255,180,0.5)';
   g.lineWidth = 1;
@@ -50,6 +73,7 @@ function staticLayer(map: MapDef, px: number) {
 
 export function Minimap(p: { client: GameClient; toggle: number; touch: boolean }) {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const roomRef = useRef<HTMLDivElement | null>(null);
   const [big, setBig] = useState(getSettings().minimapBig);
   const first = useRef(true);
   useEffect(() => {
@@ -91,6 +115,16 @@ export function Minimap(p: { client: GameClient; toggle: number; touch: boolean 
       const s = p.client.minimapInfo();
       g.drawImage(layer, 0, 0);
       const k = px / CELL;
+      // contorno da sala atual
+      if (s.zone) {
+        g.strokeStyle = 'rgba(255,255,255,0.55)';
+        g.lineWidth = 1.5;
+        g.strokeRect(s.zone.x0 * px + 0.75, s.zone.z0 * px + 0.75, (s.zone.x1 - s.zone.x0 + 1) * px - 1.5, (s.zone.z1 - s.zone.z0 + 1) * px - 1.5);
+      }
+      if (roomRef.current) {
+        const name = s.zone?.name ?? 'Passagem';
+        if (roomRef.current.textContent !== name) roomRef.current.textContent = name;
+      }
       // portas
       const locked = new Set(s.locked);
       for (const d of map.doors) {
@@ -164,6 +198,7 @@ export function Minimap(p: { client: GameClient; toggle: number; touch: boolean 
   return (
     <div className={`minimap ${big ? 'big' : ''}`} onClick={() => setBig((b) => !b)} title={big ? 'Clique para reduzir' : 'Clique para ampliar (tecla M)'} role="button" aria-label="Minimapa">
       <canvas ref={ref} />
+      <div className="minimap-room" ref={roomRef} aria-live="polite" />
       {big && (
         <button
           className="minimap-close"

@@ -385,11 +385,18 @@ export class AudioEngine {
   }
 
   /** Disparo de arma. own = tiro do próprio jogador (sem posição, mais alto). */
-  gunshot(w: 'pistola' | 'fuzil', pos: { x: number; y: number; z: number } | null) {
+  gunshot(w: 'pistola' | 'fuzil' | 'escopeta', pos: { x: number; y: number; z: number } | null) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     const out = this.dest(pos, pos ? 1 : 0.7, 0.7);
-    if (w === 'pistola') {
+    if (w === 'escopeta') {
+      // estrondo grave e longo + "clack" da bomba (pump) logo depois
+      this.noise(out, t, 0.35, 2200, 150, 1, 1.2, 0.001);
+      this.tone(out, t, 0.32, 'sine', 95, 32, 1, 0.001);
+      this.noise(out, t + 0.02, 0.7, 700, 120, 0.6, 0.35, 0.02);
+      this.noise(out, t + 0.45, 0.05, 4000, 2500, 0.35, 0.3, 0.001);
+      this.noise(out, t + 0.58, 0.05, 3500, 2200, 0.35, 0.3, 0.001);
+    } else if (w === 'pistola') {
       this.noise(out, t, 0.18, 3000, 400, 0.8, 1, 0.001);
       this.tone(out, t, 0.2, 'sine', 140, 45, 0.9, 0.001);
       this.noise(out, t + 0.01, 0.4, 900, 200, 0.5, 0.25, 0.01);

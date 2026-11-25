@@ -1,7 +1,7 @@
 /** Estado do HUD publicado pelo GameClient (atualizado ~12x por segundo). */
 import { useSyncExternalStore } from 'react';
-import type { AbilityId, ItemKind } from '../../../shared/constants';
-import type { EcoType, PStatus, Role, TaskView, WeaponState } from '../../../shared/protocol';
+import type { AbilityId } from '../../../shared/constants';
+import type { EcoType, InvSlot, PStatus, Role, TaskView, WeaponState } from '../../../shared/protocol';
 
 export interface FeedLine {
   id: number;
@@ -20,7 +20,10 @@ export interface HudState {
   aimLock: boolean;
   staminaMax: number;
   exhausted: boolean;
-  inv: (ItemKind | null)[];
+  inv: (InvSlot | null)[];
+  maxHp: number;
+  /** segundos até a entidade levantar (0 = de pé) */
+  entDown: number;
   detCharges: number;
   channel: { label: string; p: number } | null;
   timeLeft: number;
@@ -57,7 +60,7 @@ export interface HudState {
   stale: boolean;
   locked: boolean;
   wpn: WeaponState | null;
-  entHp: [number, number];
+  entHp: [number, number, number];
   hit: boolean;
 }
 
@@ -74,7 +77,9 @@ export function emptyHud(): HudState {
     aimLock: false,
     staminaMax: 100,
     exhausted: false,
-    inv: [null, null, null, null],
+    inv: [null, null, null, null, null],
+    maxHp: 100,
+    entDown: 0,
     detCharges: 0,
     channel: null,
     timeLeft: 0,
@@ -111,7 +116,7 @@ export function emptyHud(): HudState {
     stale: false,
     locked: false,
     wpn: null,
-    entHp: [1, 1],
+    entHp: [1, 1, 0],
     hit: false,
   };
 }

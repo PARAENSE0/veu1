@@ -1,6 +1,6 @@
 /** Tela da partida: canvas 3D, HUD, controles de toque, inventário, menu e carregamento. */
 import { useEffect, useRef, useState } from 'react';
-import { ABILITIES, FLAMER, GUNS, ITEM_INFO, WEAPON_NAMES, WEAPON_ORDER, type AbilityId } from '../../../shared/constants';
+import { ABILITIES, FLAMER, GUNS, ITEM_INFO, ITEM_STACK, WEAPON_NAMES, WEAPON_ORDER, type AbilityId } from '../../../shared/constants';
 import { GameClient, ECO_NAMES } from '../game/game';
 import { useHud, type HudStore } from '../game/hudstore';
 import { net } from '../net';
@@ -128,6 +128,7 @@ function Hud(p: { client: GameClient; store: HudStore }) {
   return (
     <div className={`hud ${h.touch ? 'touch' : ''}`}>
       <div className="vignette" />
+      <RoleReveal client={c} />
       {surv && <div className="threat" style={{ opacity: Math.min(0.9, h.threat * h.threat * 1.2) }} />}
       {h.damage > 0 && <div className="damage" style={{ opacity: h.damage }} />}
       {h.glitch > 0 && <div className="glitch" style={{ opacity: h.glitch }} />}
@@ -140,9 +141,17 @@ function Hud(p: { client: GameClient; store: HudStore }) {
         <div className="zone-name">{h.zone}</div>
         {h.stale && <div className="tag danger" style={{ marginTop: 6 }}>conexão instável — reconectando…</div>}
         <div className="ent-hp" title="Integridade da entidade">
-          <span>{h.role === 'entity' ? 'SUA INTEGRIDADE' : 'ENTIDADE'}</span>
-          <Bar value={h.entHp[0] / h.entHp[1]} color="var(--entity)" />
-          <span className="mono">{h.entHp[0]}</span>
+          <span>{h.role === 'entity' ? 'SUA VIDA' : 'ENTIDADE'}</span>
+          {h.entDown > 0 ? (
+            <span className="tag danger ent-down">DERRUBADA · levanta em {Math.ceil(h.entDown)} s</span>
+          ) : (
+            <>
+              <Bar value={h.entHp[0] / h.entHp[1]} color="var(--entity)" />
+              <span className="mono">
+                {h.entHp[0]}/{h.entHp[1]}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -247,8 +256,10 @@ function Hud(p: { client: GameClient; store: HudStore }) {
         <div className="hud-bl hud-box">
           <div className="vital hp">
             <span style={{ width: 54 }}>VIDA</span>
-            <Bar value={h.hp / 100} />
-            <span>{h.hp}</span>
+            <Bar value={h.hp / h.maxHp} />
+            <span className="mono">
+              {h.hp}/{h.maxHp}
+            </span>
           </div>
           <div className={`vital st ${h.exhausted ? 'exh' : ''}`}>
             <span style={{ width: 54 }}>{h.exhausted ? 'EXAUSTO' : 'FÔLEGO'}</span>
@@ -275,6 +286,7 @@ function Hud(p: { client: GameClient; store: HudStore }) {
             {h.camo && <span className="tag accent">camuflado</span>}
             <span className="tag">ataque {h.attackCd > 0 ? h.attackCd.toFixed(1) + 's' : 'pronto'}</span>
           </div>
+          <div className="muted" style={{ fontSize: 10, marginTop: 6 }}>Você não se regenera. Cure-se na Caixa Médica (Enfermaria).</div>
         </div>
       )}
 
@@ -283,14 +295,17 @@ function Hud(p: { client: GameClient; store: HudStore }) {
         <div className="hud-br">
           {h.wpn && <WeaponPanel h={h} />}
           <div className="slots">
-            {h.inv.map((k, i) => (
-              <div key={i} className="slot" style={{ pointerEvents: h.touch ? 'auto' : 'none' }} onClick={() => k && c.useSlot(i)}>
+            {h.inv.map((sl, i) => (
+              <div key={i} className="slot" style={{ pointerEvents: h.touch ? 'auto' : 'none' }} onClick={() => sl && c.useSlot(i)}>
                 <span className="k">{i + 1}</span>
-                {k ? (
+                {sl ? (
                   <div>
-                    <div className="ico" style={{ background: rgbCss(ITEM_INFO[k].color), margin: '0 auto 3px' }} />
-                    {ITEM_INFO[k].name}
-                    {k === 'detector' ? ` (${h.detCharges})` : ''}
+                    <div className="ico" style={{ background: rgbCss(ITEM_INFO[sl.k].color), margin: '0 auto 3px' }} />
+                    {ITEM_INFO[sl.k].name}
+                    {sl.k === 'detector' ? ` (${h.detCharges})` : ''}
+                    <span className={`qty ${sl.n >= ITEM_STACK[sl.k] && ITEM_STACK[sl.k] > 1 ? 'full' : ''}`}>
+                      {sl.n}/{ITEM_STACK[sl.k]}
+                    </span>
                   </div>
                 ) : (
                   <span className="muted">—</span>
@@ -364,17 +379,18 @@ function Hud(p: { client: GameClient; store: HudStore }) {
           <div className="panel inventory-panel">
             <h3>Inventário</h3>
             <div className="inv-grid">
-              {h.inv.map((k, i) => (
+              {h.inv.map((sl, i) => (
                 <div key={i} className="inv-cell">
                   <div className="row">
                     <span className="key">{i + 1}</span>
-                    <b className="grow">{k ? ITEM_INFO[k].name : 'Vazio'}</b>
-                    {k && <span className="ico" style={{ width: 14, height: 14, borderRadius: 3, background: rgbCss(ITEM_INFO[k].color) }} />}
+                    <b className="grow">{sl ? `${ITEM_INFO[sl.k].name} × ${sl.n}` : 'Vazio'}</b>
+                    {sl && <span className="mono muted">máx. {ITEM_STACK[sl.k]}</span>}
+                    {sl && <span className="ico" style={{ width: 14, height: 14, borderRadius: 3, background: rgbCss(ITEM_INFO[sl.k].color) }} />}
                   </div>
-                  {k && <div className="muted" style={{ fontSize: 12 }}>{ITEM_INFO[k].desc}{k === 'detector' ? ` Cargas: ${h.detCharges}.` : ''}</div>}
-                  {k && (
+                  {sl && <div className="muted" style={{ fontSize: 12 }}>{ITEM_INFO[sl.k].desc}{sl.k === 'detector' ? ` Cargas: ${h.detCharges}.` : ''}</div>}
+                  {sl && (
                     <div className="row">
-                      {ITEM_INFO[k].usable && (
+                      {ITEM_INFO[sl.k].usable && (
                         <Button small onClick={() => c.useSlot(i)}>
                           Usar
                         </Button>
@@ -447,19 +463,68 @@ function Hud(p: { client: GameClient; store: HudStore }) {
   );
 }
 
+/**
+ * Revelação das funções no início da partida: primeiro a sua (grande), depois
+ * cada jogador aparece um a um com a função sorteada pelo servidor.
+ */
+function RoleReveal(p: { client: GameClient }) {
+  const intro = p.client.intro;
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    const t0 = performance.now();
+    let raf = 0;
+    const tick = () => {
+      const v = (performance.now() - t0) / 1000;
+      setT(v);
+      if (v < 7) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+  if (t >= 7) return null;
+  const me = intro.players.find((x) => x.id === intro.you)!;
+  const ent = me.role === 'entity';
+  const order = [...intro.players].sort((a, b) => (a.role === 'entity' ? -1 : b.role === 'entity' ? 1 : a.name.localeCompare(b.name)));
+  return (
+    <div className="role-reveal" style={{ opacity: t > 6 ? Math.max(0, 7 - t) : 1 }}>
+      <div className={`role-card ${ent ? 'entity' : 'survivor'}`} style={{ transform: `scale(${Math.min(1, 0.8 + t * 0.4)})` }}>
+        <div className="mono muted" style={{ letterSpacing: '0.3em', fontSize: 12 }}>SORTEIO DO SERVIDOR</div>
+        <div className="role-title">{ent ? 'VOCÊ É A ENTIDADE' : 'VOCÊ É UM SOBREVIVENTE'}</div>
+        <div className="muted" style={{ fontSize: 13 }}>{ent ? 'Cace os humanos antes que escapem — e cuidado com o fogo.' : 'Procure armas, cumpra os objetivos e escape. Só o lança-chamas mata a entidade.'}</div>
+      </div>
+      <div className="role-list">
+        {order.map((pl, i) => (
+          <div key={pl.id} className={`role-row ${pl.role}`} style={{ opacity: t > 1 + i * 0.35 ? 1 : 0, transform: `translateY(${t > 1 + i * 0.35 ? 0 : 8}px)` }}>
+            <span>{pl.name}{pl.id === intro.you ? ' (você)' : ''}</span>
+            <b>{pl.role === 'entity' ? 'ENTIDADE' : 'HUMANO'}</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function WeaponPanel(p: { h: { wpn: import('../../../shared/protocol').WeaponState | null; touch: boolean } }) {
   const w = p.h.wpn!;
   const sel = w.sel;
+  if (!sel)
+    return (
+      <div className="hud-box weapon-panel">
+        <div style={{ fontSize: 12, fontWeight: 600 }}>Desarmado</div>
+        <div className="muted" style={{ fontSize: 11 }}>Explore o complexo: pistola, AK-47, escopeta e lança-chamas estão espalhados pelo mapa.</div>
+        <AmmoReserve w={w} />
+      </div>
+    );
   const gun = sel === 'lanca' ? null : GUNS[sel];
-  const mag = gun ? w.mag[sel as 'pistola' | 'fuzil'] : 0;
-  const res = gun ? w.res[sel as 'pistola' | 'fuzil'] : 0;
+  const mag = gun && sel !== 'lanca' ? w.mag[sel] : 0;
+  const res = gun && sel !== 'lanca' ? w.res[sel] : 0;
   const low = gun ? mag === 0 && res === 0 : w.fuel <= 0;
   return (
     <div className="hud-box weapon-panel">
-      <div className="row" style={{ gap: 6, marginBottom: 4, flexWrap: 'nowrap' }}>
+      <div className="row" style={{ gap: 4, marginBottom: 4, flexWrap: 'nowrap' }}>
         {WEAPON_ORDER.map((id) => (
-          <span key={id} className={`tag ${id === sel ? 'warn' : ''}`}>
-            {id === 'pistola' ? 'P-50' : id === 'fuzil' ? 'FR-9' : 'LC-3'}
+          <span key={id} className={`tag ${id === sel ? 'warn' : ''}`} style={{ opacity: w.own.includes(id) ? 1 : 0.3 }} title={w.own.includes(id) ? WEAPON_NAMES[id] : `${WEAPON_NAMES[id]} — ainda não encontrada`}>
+            {id === 'pistola' ? 'PIST' : id === 'fuzil' ? 'AK' : id === 'escopeta' ? 'ESC' : 'FOGO'}
           </span>
         ))}
       </div>
@@ -482,6 +547,13 @@ function WeaponPanel(p: { h: { wpn: import('../../../shared/protocol').WeaponSta
       {low && <div className="tag danger" style={{ marginTop: 4 }}>{gun ? 'sem munição — procure caixas' : 'sem combustível'}</div>}
     </div>
   );
+}
+
+/** Munição guardada para armas que o jogador ainda não tem (ela fica na mochila). */
+function AmmoReserve(p: { w: import('../../../shared/protocol').WeaponState }) {
+  const parts = (['pistola', 'fuzil', 'escopeta'] as const).filter((g) => p.w.res[g] > 0).map((g) => `${GUNS[g].short} ${p.w.res[g]}`);
+  if (p.w.fuel > 0) parts.push(`combustível ${Math.round(p.w.fuel)}`);
+  return parts.length ? <div className="mono muted" style={{ fontSize: 10, marginTop: 4 }}>Mochila: {parts.join(' · ')}</div> : null;
 }
 
 function TouchControls(p: { client: GameClient; role: 'survivor' | 'entity'; spectating: boolean }) {

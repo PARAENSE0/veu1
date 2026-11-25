@@ -5,7 +5,7 @@
 import { randomInt, randomUUID } from 'node:crypto';
 import { COUNTDOWN, LOAD_TIMEOUT, RECONNECT_GRACE, LOBBY_DISCONNECT_GRACE, MAX_PLAYERS, MIN_PLAYERS, TICK_RATE } from '../shared/constants';
 import { MAPS } from '../shared/map';
-import type { ChatLine, MatchResults, RolePref, RoomInfo, RoomListEntry, RoomState, ServerMsg } from '../shared/protocol';
+import type { ChatLine, MatchResults, RoomInfo, RoomListEntry, RoomState, ServerMsg } from '../shared/protocol';
 import type { Loadout } from '../shared/progression';
 import { levelFromXp } from '../shared/progression';
 import type { UpgradeLevels } from '../shared/upgrades';
@@ -27,7 +27,6 @@ interface Member {
   level: number;
   loadout: Loadout;
   ready: boolean;
-  pref: RolePref;
   connected: boolean;
   leftAt: number;
   entityTurns: number;
@@ -71,7 +70,6 @@ export class Room {
         level: m.level,
         host: m.id === this.hostId,
         ready: m.ready,
-        pref: m.pref,
         connected: m.connected,
         guest: m.guest,
         loadout: m.loadout,
@@ -101,7 +99,6 @@ export class Room {
       level: levelFromXp(u.totalXp).level,
       loadout: { ...u.loadout },
       ready: false,
-      pref: 'any',
       connected: true,
       leftAt: 0,
       entityTurns: 0,
@@ -146,13 +143,15 @@ export class Room {
     return null;
   }
 
-  /** Escolhe a entidade: prioriza quem pediu "Entidade", depois "Qualquer"; entre esses, quem foi entidade menos vezes. */
+  /**
+   * Sorteia a entidade no servidor (ninguém escolhe a própria função). Entre os
+   * jogadores conectados, só concorre quem foi entidade menos vezes nesta sala,
+   * para ninguém ser sorteado repetidamente enquanto outros nunca foram.
+   */
   pickEntity(): Member {
     const ms = [...this.members.values()].filter((m) => m.connected);
-    const tier = (p: RolePref) => ms.filter((m) => m.pref === p);
-    const pool = tier('entity').length ? tier('entity') : tier('any').length ? tier('any') : ms;
-    const minTurns = Math.min(...pool.map((m) => m.entityTurns));
-    const cands = pool.filter((m) => m.entityTurns === minTurns);
+    const minTurns = Math.min(...ms.map((m) => m.entityTurns));
+    const cands = ms.filter((m) => m.entityTurns === minTurns);
     return cands[randomInt(cands.length)];
   }
 
@@ -166,7 +165,7 @@ export class Room {
     this.match = new Match(matchId, this.mapId, randomInt(2 ** 31), inits, {
       send: (id, msg) => this.mgr.sendTo(id, msg),
       onEnd: (results, stats) => void this.mgr.finishMatch(this, results, stats),
-    }, { duration: this.mgr.opts.matchDuration, supplyRespawn: this.mgr.opts.supplyRespawn });
+    }, { duration: this.mgr.opts.matchDuration, supplyRespawn: this.mgr.opts.supplyRespawn, entityDownTime: this.mgr.opts.entityDownTime });
     this.state = 'loading';
     this.loadTimer = LOAD_TIMEOUT;
     for (const p of inits) this.mgr.sendTo(p.id, { t: 'match:load', intro: this.match.intro(p.id) });
@@ -216,7 +215,7 @@ export class RoomManager {
   constructor(
     readonly accounts: Accounts,
     readonly store: Store,
-    readonly opts: { matchDuration?: number; countdown?: number; supplyRespawn?: number } = {},
+    readonly opts: { matchDuration?: number; countdown?: number; supplyRespawn?: number; entityDownTime?: number } = {},
   ) {}
 
   startLoop() {

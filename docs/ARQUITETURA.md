@@ -34,7 +34,8 @@ veu/
 │   ├── app.ts              HTTP + WebSocket, limites de taxa, roteamento de mensagens
 │   ├── http.ts             API REST, arquivos estáticos, cabeçalhos de segurança
 │   ├── accounts.ts         scrypt, sessões, perfil, loja, recompensas, melhorias,
-│   │                       códigos de presente, ranking, amigos
+│   │                       códigos de presente, ranking (semanal/geral), amigos
+│   ├── weekly.ts           cálculo da semana (segunda 00:00, UTC−3) do ranking semanal
 │   ├── rooms.ts            salas, lobby, sorteio da entidade, ciclo da partida
 │   ├── match.ts            simulação autoritativa da partida
 │   ├── tasks.ts            sorteio e estado dos objetivos
@@ -52,8 +53,10 @@ veu/
 │                           characters.ts (humanos e criatura), meshes.ts (malhas orgânicas),
 │                           aim.ts (assistência de mira), textures.ts, audio.ts, input.ts,
 │                           voice.ts, hudstore.ts, math.ts
-├── tests/                  unit.ts, e2e-social.ts, e2e-combat.ts, e2e-weapons.ts,
-│                           e2e-match.ts (bots), browser-smoke.mjs (Chrome), model-shots.mjs
+├── tests/                  unit.ts, sim-balance.ts (simulação sem rede), e2e-social.ts,
+│                           e2e-combat.ts, e2e-weapons.ts, e2e-nine.ts (9 jogadores),
+│                           e2e-match.ts (bots), browser-smoke.mjs + browser-extra.ts (Chrome),
+│                           support-server.ts, capture-scenes.ts, model-shots.mjs
 ├── scripts/                build.mjs (esbuild), check-schema.sh
 ├── typings-offline/        tipos mínimos usados só quando não há @types (ver abaixo)
 └── docs/                   ARQUITETURA, DESIGN, ROADMAP, capturas
@@ -121,3 +124,14 @@ O ambiente onde o projeto foi escrito não tinha `@types/react` e `@types/ws`. P
 
 ## Personagens 3D
 `meshes.ts` gera superfícies de revolução com seção elíptica e normais suaves (elipsoides, membros afunilados com articulações arredondadas, espinhos, montagem de peças). `characters.ts` monta a criatura e os humanos como cadeias de articulações animadas proceduralmente (andar, correr, agachar, perseguir, atacar, golpe especial, dano, morte; nos humanos, IK de dois ossos segura a arma com as duas mãos). Cada personagem usa ~20 chamadas de desenho e as malhas são criadas uma vez por contexto WebGL. Para usar modelos de artista no futuro, basta substituir as funções de construção por malhas importadas mantendo os mesmos pontos de articulação.
+
+## Atualização v0.3
+
+- **Protocolo 3** (`PROTOCOL_VERSION`, exibido no log do servidor). O cache do PWA passou para `veu-shell-v3`, então o app instalado baixa a interface nova na próxima abertura (não há verificação de versão no aperto de mão do WebSocket).
+- **Armas no chão** (`Match.weapons`): cada arma tem id; o servidor remove a arma do mapa e dá a posse no mesmo tick, então dois pedidos simultâneos nunca duplicam. O snapshot leva `gw` (armas visíveis) e `wpn.own` (armas que o jogador possui).
+- **Dano**: `damageEntity(valor, autor, ponto, emitir, fogo)` — se a entidade está derrubada, nada acontece; vida zero por fogo = fim da partida (humanos vencem); por bala = `knockDown` (atordoa, cancela habilidades, `entdown`), e `updateEntityDown` a levanta com a vida máxima (`entup`). Não existe regeneração.
+- **Caixa Médica**: canalização `medbox` validada pelo servidor (distância 2,2 m, de frente, vivo e livre); cura `0,35 × vida máxima`, limitada ao máximo.
+- **Inventário**: `InvSlot {k, n}`; `invAdd` recusa acima de `ITEM_STACK`.
+- **Sorteio**: `Room.pickEntity()` escolhe ao acaso entre os conectados com menor `entityTurns`.
+- **Ranking semanal**: `UserRecord.week {id, xp, wins}`; `Accounts.archiveWeeks()` roda na inicialização, a cada 60 s (timer `unref`) e em toda consulta; guarda o top 10 em `weeks`. Rotas: `GET /api/ranking?by=semanal|xp|vitorias` e `GET /api/ranking/history`. Schema PostgreSQL: tabelas `week_scores` e `week_history`, XP e moedas em `BIGINT` sem teto.
+- **Variável `ENTITY_DOWN_TIME`**: tempo de queda da entidade (3–120 s, padrão 20).

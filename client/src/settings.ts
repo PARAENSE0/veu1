@@ -20,6 +20,7 @@ export type Action =
   | 'item2'
   | 'item3'
   | 'item4'
+  | 'item5'
   | 'rastro'
   | 'eco'
   | 'ruptura'
@@ -48,6 +49,7 @@ export const ACTION_LABELS: Record<Action, string> = {
   item2: 'Usar item 2',
   item3: 'Usar item 3',
   item4: 'Usar item 4',
+  item5: 'Usar item 5',
   rastro: 'Entidade: Rastro',
   eco: 'Entidade: Eco Falso',
   ruptura: 'Entidade: Ruptura',
@@ -77,6 +79,7 @@ export const DEFAULT_BINDINGS: Record<Action, string> = {
   item2: 'Digit2',
   item3: 'Digit3',
   item4: 'Digit4',
+  item5: 'Digit5',
   rastro: 'KeyQ',
   eco: 'KeyR',
   ruptura: 'Space',

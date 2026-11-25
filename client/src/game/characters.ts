@@ -684,6 +684,7 @@ export function solveArm(target: V, a: number, b: number) {
 const GRIP: Record<WeaponId, { at: V; right: V; left: V }> = {
   pistola: { at: [0.05, 0.43, -0.42], right: [0, -0.07, 0.03], left: [-0.025, -0.08, 0.05] },
   fuzil: { at: [0.08, 0.41, -0.24], right: [0, -0.08, -0.08], left: [0, -0.03, -0.4] },
+  escopeta: { at: [0.08, 0.4, -0.22], right: [0, -0.08, -0.04], left: [0, -0.04, -0.38] },
   lanca: { at: [0.09, 0.36, -0.22], right: [0, -0.08, 0], left: [0, -0.03, -0.3] },
 };
 

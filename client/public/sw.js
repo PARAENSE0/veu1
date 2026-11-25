@@ -6,7 +6,7 @@
  *   só usa o cache quando estiver sem internet.
  * - Nunca guarda a API (/api) nem o WebSocket (/ws): o jogo é online.
  */
-const CACHE = 'veu-shell-v2';
+const CACHE = 'veu-shell-v3';
 const SHELL = ['/', '/index.html', '/app.js', '/styles.css', '/manifest.webmanifest', '/icon.svg', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
